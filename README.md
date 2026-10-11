@@ -74,25 +74,21 @@ This is meant to be read start to finish, in order — later lessons assume you'
 
 If you've never touched classic system design before, start with Lesson 2 even though it's a short one — everything after it assumes you have that vocabulary. If you're already comfortable with AI-native concepts, Lesson 1 will mostly be a quick refresher rather than new material.
 
-## How this relates to my other repos
+## How this relates to  other repos
 
+- [`system-design-primer`](https://github.com/donnemartin/system-design-primer) — the original reference this repo is structured after, and still the better place to go once you want to go deeper than this repo's curated scope (its own exhaustive company-architecture list, SQL-tuning internals, full OSI-layer detail, and many more worked interview questions beyond AI/agentic ones).
 - [`learn-docker`](https://github.com/romancobblepot/learn-docker) — Docker fundamentals, taught around a real todo-app project. No topic overlap, but it's where I first used this lesson/checkpoint teaching format.
 - [`learn-docker-ai-agents`](https://github.com/romancobblepot/learn-docker-ai-agents) — hands-on Docker tooling for AI agents (sandboxing, local model serving, MCP tools, `cagent`): the *tool-specific* companion to this repo's *system design* thinking. Best read side by side, not one instead of the other.
-- [`system-design-primer`](https://github.com/donnemartin/system-design-primer) — the original reference this repo is structured after, and still the better place to go once you want to go deeper than this repo's curated scope (its own exhaustive company-architecture list, SQL-tuning internals, full OSI-layer detail, and many more worked interview questions beyond AI/agentic ones).
-
-## Who it's for
-
-Anyone preparing for an AI/ML system design interview, or just trying to build a real mental model of how production AI systems are actually architected — especially if your AI-native vocabulary is already solid but the classic infrastructure side (caching, sharding, queues, availability) feels like a gap.
 
 ## Credits
 
 This repo stands on the shoulders of people who've put real effort into teaching this stuff well. Big credit to:
 
 - **[Chip Huyen](https://huyenchip.com/)** — her two books, [*Designing Machine Learning Systems*](https://www.huyenchip.com/books/) and *AI Engineering* ([O'Reilly](https://www.oreilly.com/library/view/ai-engineering/9781098166298/)), are about as good as it gets for actually understanding how production ML/AI systems hold together. If you only read two books on this topic, make them these.
-- **[`system-design-primer`](https://github.com/donnemartin/system-design-primer)** — the GOAT of system design repos, and honestly the whole reason this repo exists in the shape it does. Massive respect for putting together something this thorough and keeping it free and open for everyone.
 - **[Dr. Raj Dandekar, Dr. Rajat Dandekar, Dr. Sreedath Panat, and the rest of the team at Vizuara](https://www.youtube.com/@vizuara)** — MIT-PhD-level rigor on AI/ML fundamentals, explained without the usual jargon wall. A genuinely great resource if you want to go deeper on the ML/DL side.
 - **[Hamel Husain](https://hamel.dev/)** — his blog is close to required reading if you care about LLM evals done properly. Incredibly generous about sharing hard-won, real-world lessons instead of just theory.
 - **[Nitish Singh and CampusX](https://www.youtube.com/@campusx-official)** — one of the best channels out there for building real data science/ML intuition from the ground up, in a way that's actually approachable.
+- **[`system-design-primer`](https://github.com/donnemartin/system-design-primer)** — the GOAT of system design repos, and honestly the whole reason this repo exists in the shape it does. Massive respect for putting together something this thorough and keeping it free and open for everyone.
 
 Go check out their work — all of it is worth your time.
 
