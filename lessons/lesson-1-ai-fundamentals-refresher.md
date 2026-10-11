@@ -1,0 +1,124 @@
+# Lesson 1: AI/Agentic Fundamentals — A Compressed Refresher
+
+**Time:** 45-60 minutes
+**Tool(s):** Conceptual refresher — no single tool; see pointers to `learn-docker-ai-agents` below
+
+## Learning Objectives
+
+By the end of this lesson, you will:
+
+- Have a shared, precise vocabulary for the AI-application concepts the rest of this repo assumes you already know (Groups A-E below)
+- Understand what makes AI application design fundamentally different from ordinary software design (non-determinism, token-based cost, prompt-as-attack-surface)
+- Understand model serving, retrieval/RAG, agent architecture, and agent memory at a refresher depth — enough to follow Lessons 3-11 without re-deriving these from scratch
+- Know exactly where to go for hands-on practice with the pieces that have a real tool behind them (`learn-docker-ai-agents`) and where this repo picks concepts back up later (Lesson 5)
+
+---
+
+## A. Foundations
+
+AI applications differ from ordinary deterministic software in three load-bearing ways:
+
+- The same input can produce a different output every time.
+- Every unit of input and output carries a real, measurable cost and delay.
+- Anything the model reads is a potential set of instructions, not inert data.
+
+These properties are why "AI system design" isn't just "system design with an LLM box added" — they change what you design *for*. This subsection also covers the two resources those properties are measured in: context window and tokens.
+
+| Term | Full definition | Why it matters |
+|---|---|---|
+| **Non-determinism** | Running the same prompt against the same model twice can produce different outputs. LLMs generate text by sampling from a probability distribution over possible next tokens (the model's basic unit of text, defined below) rather than always picking the single most likely one — and even with sampling turned all the way down, floating-point and batching effects on real serving hardware can still introduce small variation. | Ordinary software testing assumes "same input, same output." AI application design can't — which is the direct reason Lesson 9 exists: you need evals, not plain assertions, to know if an AI feature is "working." |
+| **Token-based cost and latency** | Both how much an AI request costs and how long it takes to respond scale with the number of tokens processed (input) and generated (output) — not a fixed per-request charge the way a typical API call is often priced. More input context or a longer answer means more money and more wall-clock time. | This turns "how much context should I send the model" and "how long should the answer be" into real engineering trade-offs with a dollar figure attached, not just a quality knob — the direct motivation for Lesson 10's cost-attribution and rate-limiting content (H2, H4). |
+| **Prompt as attack surface** | Any text an LLM reads — the user's own message, a document retrieved for it, a web page it fetched, a tool's output — can contain instructions that the model may follow, whether or not the application developer intended for that text to carry instructions at all. Unlike a traditional input field that a parser either accepts or rejects, natural-language input has no hard boundary between "data" and "command." | This is the root cause of prompt injection, which Lesson 8 (F1) treats as a first-class security topic, not an edge case — RAG results and tool outputs are exactly the kind of "data" that turns out to double as an attack surface. |
+| **Context window** | The maximum number of tokens (combined input and output) a given model can process in a single request — a hard ceiling set by the model itself, not a configuration option. Once a conversation, a retrieved document set, or a long tool-output trace exceeds it, older or lower-priority content has to be dropped, summarized, or never sent in the first place. | Context window size is the resource every retrieval design (Group C below), every multi-turn chat, and every agent's working memory (Group E below) is budgeting against — it's the single most common hard constraint in AI application design. |
+| **Token economics** | Reasoning about AI costs in terms of tokens rather than requests: models are typically priced per million tokens processed (often with a different, usually lower, rate for input tokens than output tokens), a "token" itself is roughly 3/4 of an English word on average (not one token per word, and not one token per character), and the same piece of text can tokenize to a different token count on different model families' tokenizers. | Without this mental model, a back-of-envelope cost estimate (the technique Lesson 7's M4 teaches properly) is just a guess — token economics is the unit conversion that estimate depends on. |
+
+**Why this still matters for later lessons:** A3's token economics underlies the `appendix/token-and-latency-numbers.md` reference table and Lesson 7's back-of-envelope estimation technique (Concept M4).
+
+---
+
+## B. Serving and running models
+
+Once you have a model, you still have to decide where it runs, how requests reach it efficiently, and how to avoid paying for the same computation twice. This group covers the operational layer under "call the model": the choices that determine latency, throughput, and bill, independent of which model you picked.
+
+| Term | Full definition | Why it matters |
+|---|---|---|
+| **Hosted vs. self-hosted serving** | Hosted serving means calling a model through a provider's API (e.g. Anthropic's or OpenAI's), where the provider owns and operates the GPUs, scaling, and uptime, and you pay per token. Self-hosted serving means you run the model's weights yourself on infrastructure you control (your own GPUs or a cloud VM you manage), trading the provider's convenience and elasticity for control over cost at scale, data residency, and customization. | This is the first fork in almost every AI infrastructure decision — it determines whether your Lesson 10 scaling problem is "manage your rate limits with a vendor" or "manage your own GPU fleet." |
+| **Batching** | A serving technique where a model-serving engine groups multiple incoming requests together and runs them through the model in a single forward pass — a forward pass being one full run of input through the model's layers to produce output — instead of one request at a time, because GPUs are far more efficient processing many requests at once than one at a time. Modern serving engines use *continuous* (or *dynamic*) batching, which can add a newly-arrived request into an in-progress batch rather than waiting for the whole batch to finish first. | Batching is the main lever determining how many concurrent users one GPU can serve — it's why a self-hosted model's real-world throughput depends on the serving engine, not just the raw hardware. |
+| **KV cache** | Short for "key-value cache." During text generation, a transformer model — the neural network architecture behind virtually all modern LLMs, which processes a sequence by weighing how much each token should "attend to" every other token — computes intermediate "key" and "value" tensors for every token it has already processed; the KV cache stores these so that generating the *next* token doesn't require recomputing them for the entire conversation so far, only for the newest token. Without it, every new token would cost as much compute as regenerating the whole conversation from scratch. | The KV cache is the single largest consumer of GPU memory during serving, which directly caps how many concurrent requests (or how long a context) a given GPU can handle — it's the resource capstone #10 (`solutions/llm-inference-serving`) is built around. |
+| **Quantization** | The technique of storing a model's weights using fewer bits per number than they were trained with (e.g. converting 16-bit floating-point weights down to 8-bit or 4-bit integers), which shrinks the model's memory footprint and can speed up inference, at the cost of some loss in output quality/precision. | Quantization is frequently the difference between "this model fits on the GPU I have" and "it doesn't" — it's a direct lever on the hosted-vs-self-hosted trade-off above. |
+| **Local/open-weight serving** | Running a model whose weights are downloadable and runnable on your own hardware (an "open-weight" model, as opposed to a closed, API-only model), typically on a laptop or workstation rather than a data-center GPU cluster, using a local serving tool. | See `learn-docker-ai-agents` Lesson 2 for the actual hands-on walkthrough (Docker Model Runner) — this lesson only refreshes the concept, it doesn't re-teach the tool. |
+| **Model routing / gateway** | A layer placed in front of one or more models that decides, per request, which model or provider actually handles it — based on cost, latency, capability needed, or current load — and that can also provide a single unified API surface, rate limiting, and failover across multiple underlying model providers. | This is the pattern capstone #15 (`solutions/llm-api-gateway`) is built around, and it's the AI-specific cousin of the classic load-balancer/reverse-proxy pattern Lesson 4 teaches directly. |
+| **Semantic caching** | A caching strategy for LLM applications that stores past prompt/response pairs and, for a *new* incoming prompt, checks whether it is semantically similar enough to a cached prompt (using embedding similarity, defined in Group C below) to reuse the cached response instead of calling the model again — rather than requiring an exact string match the way a traditional cache key would. | This is the AI-native cousin of classic key-based caching: it caches on *meaning* rather than exact bytes. |
+| **Prompt caching** | A provider-side feature where a fixed or repeated portion of a prompt (e.g. a long system prompt or a shared document) is processed and stored by the model provider once, so that subsequent requests reusing that same prefix skip reprocessing it, which reduces both cost and latency for that shared portion. | Prompt caching is a cheap, provider-managed win for any application that resends the same large context repeatedly — e.g. a RAG system reusing the same retrieved document across follow-up questions in one conversation. |
+| **KV-cache reuse** | Reusing a previously computed KV cache (defined above) across multiple requests or conversation turns that share a common prefix, instead of recomputing it from scratch each time — the serving-engine-level mechanism that prompt caching above is often built on top of. | This is the specific optimization behind the dramatic serving-cost reductions reported in multi-turn chat products, and it's the mechanism capstone #10 digs into in depth. |
+
+**Why this still matters for later lessons:**
+
+- B2 (local/open-weight serving) → `learn-docker-ai-agents` Lesson 2 (hands-on walkthrough, not re-taught here).
+- B4 (caching patterns: semantic cache, prompt cache, KV-cache reuse) → this repo's Lesson 5, Concept K4 (the AI-native cousin of classic cache-aside/write-through caching).
+
+---
+
+## C. Retrieval and knowledge
+
+Models have a fixed training cutoff and a finite context window, so any application needing specific, current, or proprietary information has to fetch it and hand it to the model at request time. This group covers that fetch-and-hand-off pipeline — retrieval-augmented generation (RAG) — from how text becomes searchable to how the pipeline stays fresh.
+
+| Term | Full definition | Why it matters |
+|---|---|---|
+| **Embeddings** | A numeric vector (a fixed-length list of floating-point numbers, typically hundreds to low thousands of dimensions) produced by a separate embedding model that represents a piece of text's *meaning* in a form two pieces of text can be mathematically compared on — pieces of text with similar meaning end up with vectors that are close together by some distance measure (commonly cosine similarity — the cosine of the angle between two vectors, ranging from -1 to 1, where values near 1 mean "point in nearly the same direction"), even if they share few or no exact words. | Embeddings are the mechanism that makes "search by meaning, not by keyword" possible at all — every other concept in this group (vector databases, RAG, semantic caching from Group B) is built on top of this one idea. |
+| **Vector database** | A database purpose-built to store large numbers of embeddings and answer "find me the k vectors closest to this query vector" efficiently, using specialized indexing structures (e.g. HNSW — Hierarchical Navigable Small World — a graph-based index that lets you find approximate nearest neighbors without comparing the query against every stored vector one by one) instead of the exact-match indexes a traditional relational database uses. | A vector database is the retrieval half of RAG — without an index that can do fast approximate nearest-neighbor search, retrieval over anything beyond a tiny document set becomes too slow to use. |
+| **Chunking strategy** | The method used to split a large source document into smaller pieces ("chunks") before embedding and indexing it, since embedding an entire long document as one vector loses too much specific detail to be useful for retrieval. Strategies range from naive fixed-length splitting, to splitting on natural boundaries (paragraphs, sections), to more advanced approaches that prepend extra context to each chunk so it still makes sense when read in isolation from the rest of the document. | Chunking is not a minor preprocessing detail — it's one of the single biggest levers on whether a RAG system retrieves the *right* passage, which is exactly the lesson capstone #9 (`solutions/rag-contextual-retrieval`, grounded in Anthropic's Contextual Retrieval) is built to teach. |
+| **RAG (Retrieval-Augmented Generation) end to end** | The full pipeline that lets an LLM answer using information it wasn't trained on: a source corpus gets chunked and embedded into a vector database ahead of time; at query time, the user's question is itself embedded and used to retrieve the most relevant chunks; those chunks get inserted into the prompt as context; and the model generates its answer grounded in that retrieved context instead of (or in addition to) its own trained-in knowledge. | RAG is the default architecture for "make an LLM answer questions about our own data" — nearly every enterprise chatbot capstone in this repo's `solutions/` folder is a variation on this pipeline. |
+| **Keeping a knowledge base fresh** | The ongoing operational problem of updating a RAG system's vector database as the underlying source documents change — re-embedding and re-indexing new or edited content, removing embeddings for deleted content, and deciding how often this sync needs to run, since a RAG system is only as accurate as the corpus it retrieves from. | A RAG system with a stale index will confidently retrieve and ground answers in outdated information — this failure mode doesn't show up in a demo, only in production, which is why it's a distinct sub-topic rather than an afterthought of C4. |
+
+**Why this still matters for later lessons:** C2's vector databases resurface in Lesson 5 — Concept K2 compares them to NoSQL database types, and Concept K4 bridges back to this lesson's B4. C3's chunking strategy together with C4's end-to-end RAG pipeline resurface in capstone #9 (`solutions/rag-contextual-retrieval`), built to teach exactly that combination — good chunking feeding a correct pipeline — in full depth.
+
+---
+
+## D. Agent architecture
+
+A chatbot that only replies in text is simpler than a system that can take actions in the world — read files, call APIs, run code — and decide what to do next. This group covers the shift from "model that talks" to "model that acts": the control-flow patterns that structure an agent's next step, and the standards for connecting agents to tools, whether there's one agent or several.
+
+| Term | Full definition | Why it matters |
+|---|---|---|
+| **Chatbot vs. agent** | A chatbot is a system whose only output is a text (or voice) response to the user — it has no ability to take actions that change anything outside the conversation. An agent is a system that can, in addition to replying in text, decide to invoke tools or take actions (query a database, call an API, write a file, run code) as part of producing its response, usually in a loop where it observes the result of one action before deciding the next. | This distinction is the entire reason Groups F (safety/sandboxing) and the rest of Group D exist — a chatbot that can only talk has a much smaller blast radius than an agent that can act, which is also why sandboxing (Lesson 8) matters so much more for agents. |
+| **ReAct (control-flow pattern)** | Short for "Reasoning and Acting." A control-flow pattern where the model alternates, in a loop, between writing out a short reasoning step ("Thought: I need to look up X"), taking an action (calling a tool), observing that action's result, and then reasoning again about what to do next — continuing until it decides it has enough information to give a final answer. | ReAct is the most common loop shape underneath "AI agent" products — recognizing it is recognizing the actual control structure running underneath words like "agentic." |
+| **Plan-and-execute (control-flow pattern)** | A control-flow pattern where the model first produces a full multi-step plan up front (before taking any actions), and only then executes each step in sequence — optionally revising the plan if a step's result changes what's needed — in contrast to ReAct's one-step-at-a-time reasoning. | This trades ReAct's flexibility (easy to react to surprises) for more predictable, auditable execution — a real trade-off, not a strictly better alternative, and the kind of design choice Lesson 8's guardrail concepts assume you can name. |
+| **Reflection (control-flow pattern)** | A control-flow pattern where the model is given a separate step to critique or evaluate its own prior output or action before finalizing it or moving on — e.g. "review the code you just wrote for bugs before submitting it" — as a distinct pass from the one that produced the original output. | Reflection is a cheap way to catch a model's own mistakes without a human in the loop, and it's the same underlying idea behind the "validator/guardrail agent" role that capstone #12's multi-agent design relies on. |
+| **Tool use / function calling** | The mechanism by which a model is given a structured description (typically JSON) of one or more functions it can call — including the function's name, purpose, and expected parameters — and, instead of only generating text, can generate a structured request to call one of those functions with specific argument values, which the surrounding application then actually executes and returns the result of. | Function calling is the literal mechanism that turns a chatbot into an agent (per the chatbot-vs-agent row above) — without a structured way to request an action, there's no way for the model to act at all. |
+| **MCP (Model Context Protocol)** | An open protocol (originated by Anthropic) that standardizes how an AI application connects to external tools and data sources, through a common client-server interface — so a tool provider implements one MCP server once, and any MCP-compatible AI application can use it, instead of every application writing bespoke integration code for every tool it wants to support. | See `learn-docker-ai-agents` Lesson 3 for the hands-on walkthrough of Docker's MCP Toolkit/Gateway — this lesson only refreshes what MCP is, it doesn't re-teach the tool. |
+| **Multi-agent orchestration** | An architecture where more than one agent, often each with a distinct role (e.g. a planner, a specialist executor, a validator), collaborates on a single task — coordinated either by a designated "supervisor" agent that delegates subtasks, or by a defined hand-off protocol between peer agents. | This is the architecture behind capstone #12's multi-agent customer-support platform design, and it's the structural answer to "one agent trying to do everything" becoming unreliable as task complexity grows. |
+| **Declarative orchestration** | Defining an agent's or multi-agent system's configuration — which model it uses, which tools it has, its instructions, how it hands off to other agents — in a structured config file (e.g. YAML) rather than in imperative code that manually wires those pieces together. | See `learn-docker-ai-agents` Lesson 4 for the hands-on walkthrough (`docker agent`/cagent) — this lesson only refreshes the concept, it doesn't re-teach the tool. |
+
+**Why this still matters for later lessons:**
+
+- D4 (MCP) → `learn-docker-ai-agents` Lesson 3 (MCP Toolkit/Gateway), refreshed here, not re-taught.
+- D6 (declarative orchestration) → `learn-docker-ai-agents` Lesson 4 (`docker agent`/cagent), refreshed here, not re-taught.
+
+---
+
+## E. Memory and state
+
+An agent that runs for more than one turn needs somewhere to track what's already happened — within a conversation, across separate conversations, and across a long-running task that might be interrupted and resumed. This group covers those three kinds of "remembering," which are easy to conflate but solve different problems.
+
+| Term | Full definition | Why it matters |
+|---|---|---|
+| **Short-term memory** | The information an agent keeps available within a single conversation or task session — typically the running conversation history itself, held directly in the context window (Group A) and passed back to the model on every turn. It disappears once the session ends unless something explicitly saves it elsewhere. | Short-term memory is bounded by the context window, which is why long conversations eventually need summarization or truncation — it's a direct, practical consequence of A2. |
+| **Long-term memory** | Information about a user, a task, or past interactions that an agent stores *outside* the current conversation — often in a database or a vector database (Group C) — so it can be retrieved and reused in future, separate sessions, persisting after the original conversation that produced it has ended. | Long-term memory is what lets an agent "remember you" across separate conversations rather than starting fresh every time — and it inherits the same consistency questions (how fresh is "stored," how quickly do writes become visible) that Lesson 3's CAP-theorem concept covers generally. |
+| **State / checkpointing** | The practice of saving an agent's intermediate progress through a long-running, multi-step task — which steps are done, what intermediate results exist — at defined points, so that if the run is interrupted (a crash, a timeout, a deliberate pause) it can resume from the last checkpoint instead of starting the entire task over from step one. | This is the difference between a multi-hour autonomous agent task (like capstone #13's coding agent) being resilient to interruption versus losing all progress on any failure — it's an operational necessity, not a nice-to-have, once tasks run long enough to realistically fail partway through. |
+
+**Why this still matters for later lessons:** E2's long-term memory (together with C2's vector databases) resurfaces directly in Lesson 3's Concept I2, where CAP-theorem consistency trade-offs (weak/eventual/strong consistency) get applied specifically to vector-DB-backed long-term memory.
+
+---
+
+## Summary
+
+| Group | One-line takeaway |
+|---|---|
+| A — Foundations | AI applications are non-deterministic, priced and timed per token, and treat every piece of input text as a potential instruction — three properties ordinary software design doesn't have to account for. |
+| B — Serving and running models | Where a model runs (hosted vs. self-hosted) and how efficiently it serves requests (batching, KV cache, quantization, routing, caching) determines an AI application's real-world cost and latency. |
+| C — Retrieval and knowledge | RAG lets a model answer using information outside its training data, by embedding, chunking, indexing, and retrieving a corpus — and that corpus has to be actively kept fresh. |
+| D — Agent architecture | Tool use turns a chatbot into an agent; control-flow patterns (ReAct, plan-and-execute, reflection) structure how it decides what to do next; MCP and declarative orchestration standardize how it connects to tools and other agents. |
+| E — Memory and state | Short-term memory lives in the context window per session, long-term memory persists across sessions in external storage, and checkpointing lets long-running multi-step tasks survive interruption. |
+
+**Next:** Checkpoint 1, then Lesson 2 — a quick core system-design vocabulary refresher, before the full-depth teaching begins in Lesson 3.
