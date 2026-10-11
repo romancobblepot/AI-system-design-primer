@@ -41,6 +41,17 @@ Five classic techniques, usually combined rather than used in isolation:
 
   A less common alternative, **master-master replication**, lets more than one node accept writes directly — removing the single-primary write bottleneck, but requiring a conflict-resolution strategy for when two masters accept conflicting writes to the same row before either has heard about the other's.
 
+  Visualizing master-slave replication's write/read split:
+
+  ```mermaid
+  flowchart LR
+      APP["Application"] -->|writes| M["Primary (master) node"]
+      APP -->|reads| R1["Read replica 1"]
+      APP -->|reads| R2["Read replica 2"]
+      M -->|"continuous copy of writes\n(replication lag)"| R1
+      M -->|"continuous copy of writes\n(replication lag)"| R2
+  ```
+
 - **Federation** (also called **functional partitioning**) — split one database into several separate databases along domain lines (e.g., a `users` database and a separate `products` database, each with its own full schema, instead of all tables living in one database). Think of splitting one general store into separate specialty shops — a bakery, a hardware store — instead of cramming everything under one roof: each shop gets more room and more of its own staff's attention, but a shopping list that spans both now means two separate trips instead of one. That extra trip is the cost here, and it lands on the application: a foreign-key relationship or JOIN that used to span two tables in one database now has to be resolved in application code across two separate database connections, since the database engine itself has no visibility across that boundary.
 
 - **Sharding** (also called **horizontal partitioning**) — split the rows of a single logical table across multiple physical database nodes (**shards**), each holding a disjoint subset of rows, usually selected by a **shard key** (the column, or a function of it, that decides which shard a given row belongs on — e.g., `user_id % N`, or a hash of `user_id`).
@@ -48,6 +59,19 @@ Five classic techniques, usually combined rather than used in isolation:
   A plain-language way to see it: imagine splitting a phone book into separate volumes by last-name range. Each volume is smaller and faster to search — but if you need everyone born in 1990, scattered across every volume, you now have to search all of them. That's a **cross-shard query**, and it's the main cost of sharding: unlike federation (which splits by table/domain), sharding splits *within* one table, scaling a single hot table's reads *and* writes across many nodes — but any query needing rows from more than one shard now has to be assembled by the application from multiple shard round-trips instead of one SQL query.
 
   A naive modulo-based shard key (`id % N`) adds a further cost: changing `N` (adding or removing a shard) changes almost every row's target shard, forcing a massive data reshuffle. **Consistent hashing** — mapping both data items and nodes onto points on a circular hash space (a "ring"), so adding or removing one node only remaps the small slice of keys that land near it on the ring — exists specifically to avoid that reshuffle cost, at the price of slightly more complex routing logic than a plain modulo.
+
+  Visualizing how a shard key routes rows across nodes, and why a query spanning them becomes a cross-shard query:
+
+  ```mermaid
+  flowchart LR
+      APP["Application"] -->|"shard_key = user_id % N"| ROUTER["Shard router"]
+      ROUTER --> S0["Shard 0\n(user_id % N == 0)"]
+      ROUTER --> S1["Shard 1\n(user_id % N == 1)"]
+      ROUTER --> SN["Shard N-1"]
+      APP -.->|"cross-shard query\n(e.g. everyone born in 1990)"| S0
+      APP -.-> S1
+      APP -.-> SN
+  ```
 
 - **Denormalization** — deliberately duplicate data across tables (or embed a related record's fields directly into a row that references it) specifically to avoid an expensive JOIN at read time. It's like writing a friend's number on a sticky note by your phone instead of looking it up in your contacts app every time: faster to check, but if your friend gets a new number and you forget to update the note, you're dialing the wrong one. Same trade in a database — denormalization speeds up the read that would otherwise need the join, at the cost of extra storage and the obligation (now on the application, or on database triggers) to keep every duplicated copy consistent whenever the original is updated. Skip that obligation and the duplicates silently drift out of sync.
 
@@ -122,6 +146,16 @@ Four common NoSQL types, each matched to a different access pattern:
 - **Wide-column store** — like a spreadsheet with thousands of possible columns where most cells in most rows are simply left blank. Every row is indexed by a single **row key**, but different rows can have a hugely different number and set of columns (most columns are *sparse* — present on some rows, absent on most), and related columns are grouped into **column families** that are physically stored together on disk, so a query touching only one column family doesn't have to read the others. Purpose-built for enormous, sparse datasets where a fully rigid schema (every row must have every column) would waste huge amounts of storage. Examples: Cassandra, HBase, Google Bigtable.
 - **Graph database** — think of a subway map, where stations are **nodes** (entities) and the tracks between them are **edges** (relationships), both of which can carry their own properties. Purpose-built for traversal queries ("find every node within 2 hops of this one" — "which stations are two stops from here") that are cheap to express this way but become a chain of expensive self-joins in a relational model. Example: Neo4j.
 
+Comparing the four NoSQL types' access pattern and representative systems:
+
+```mermaid
+flowchart TD
+    DATA["Data that doesn't fit\nfixed-schema, join-centric rows"] --> KV["Key-value store\nget/set by exact key only\ne.g. Redis, DynamoDB"]
+    DATA --> DOC["Document store\nquery/index fields inside\nnested JSON-like documents\ne.g. MongoDB"]
+    DATA --> WC["Wide-column store\nsparse columns grouped into\ncolumn families, by row key\ne.g. Cassandra, HBase, Bigtable"]
+    DATA --> GR["Graph database\nnodes + edges, optimized for\ntraversal queries\ne.g. Neo4j"]
+```
+
 **SQL vs. NoSQL — an explicit trade-off, not a verdict.** A relational database's ACID guarantees (Concept 1) come from real engineering cost: enforcing strict consistency and isolation on every transaction is work, and that work gets harder to do cheaply the more nodes the data is spread across. Most NoSQL databases instead follow **BASE**:
 
 - **B**asically **A**vailable — the system stays responsive to requests essentially all the time, even if some responses aren't the freshest possible data.
@@ -137,6 +171,18 @@ This is the same CP-vs-AP tension from Lesson 3's CAP theorem, now expressed as 
 1. Each row is addressed by a row/vector ID — key-value's defining trait.
 2. The "value" is almost always a fixed-width numeric array (the embedding) plus a sidecar of variable metadata fields — document-store-like, but secondary to the vector itself.
 3. At real scale, that data is sharded across many nodes by vector ID, in the same row-key-sharding shape a wide-column store uses — not by any graph-traversal or relationship structure.
+
+Visualizing why those three traits compose into a hybrid rather than a new category:
+
+```mermaid
+flowchart LR
+    V["Vector database"] --> T1["1. Row addressed by vector ID\n(key-value trait)"]
+    V --> T2["2. Value = fixed-width embedding\n+ metadata sidecar\n(document-store-like)"]
+    V --> T3["3. Sharded by vector ID at scale\n(wide-column row-key sharding)"]
+    T1 --> HYBRID["KV/wide-column hybrid\n+ HNSW similarity index"]
+    T2 --> HYBRID
+    T3 --> HYBRID
+```
 
 So a vector database is a **KV/wide-column hybrid with a specialized similarity index bolted onto the value side**, not a new storage paradigm: the actual innovation is the *index* (HNSW, or similar structures), not the underlying row/key storage model, which is architecturally ordinary.
 
@@ -182,14 +228,72 @@ Where you put a cache, and which strategy governs how it's kept in sync with the
 - A **distributed cache** — a dedicated caching service like Redis or Memcached, shared across every application server instance, sitting between the application layer and the database.
 - The database's own internal query cache.
 
+Visualizing how a request can be served before it ever reaches the database:
+
+```mermaid
+flowchart LR
+    REQ["Request"] --> CLIENT["Client-side cache"]
+    CLIENT -->|miss| CDN["CDN edge node\n(Lesson 4, Concept J2)"]
+    CDN -->|miss| APPCACHE["App/web-server\nin-memory cache"]
+    APPCACHE -->|miss| DIST["Distributed cache\n(Redis / Memcached)"]
+    DIST -->|miss| DBCACHE["Database's own\nquery cache"]
+    DBCACHE -->|miss| DB[("Database")]
+```
+
 Each hop closer to the caller saves more latency on a hit — but a cache local to one server (rather than shared/distributed) can't be hit by a request that lands on a different server.
 
 Four caching strategies, defined by what each does on a read vs. a write:
 
 - **Cache-aside** (also called **lazy loading**) — the classic "check the fridge before going to the store" pattern. On a read, the application checks the cache first; on a hit, it returns the cached value directly; on a **cache miss**, it reads from the underlying database, then writes that result into the cache (usually with a **TTL** — time-to-live, the same concept Lesson 4's Concept J1 defined for DNS records, here applied to a cache entry: a duration after which the entry is considered stale and must be re-fetched rather than trusted) before returning it to the caller. The cache is only ever populated by read misses — nothing proactively pushes data into it. This is simple and resilient — a dead cache just makes reads slower, not wrong — but every first read after a miss pays full database latency, and the cached copy can go stale for up to a full TTL before anyone notices.
+
+  Tracing cache-aside's check-first, populate-on-miss sequence:
+
+  ```mermaid
+  sequenceDiagram
+      participant App as Application
+      participant Cache
+      participant DB as Database
+      App->>Cache: check cache
+      alt cache hit
+          Cache-->>App: cached value
+      else cache miss
+          App->>DB: read from database
+          DB-->>App: value
+          App->>Cache: write value (with TTL)
+      end
+  ```
+
 - **Write-through** — every write is applied to the cache *and* the underlying database together, synchronously, before the write is considered complete and the caller gets an acknowledgment — like refusing to call a filing "done" until both the home copy and the office copy are updated. The cache is always consistent with the database immediately after a write (there's no window where a committed write hasn't yet reached the cache), at the direct cost of doubling every write's latency — and the cache ends up holding entries that may never be read again, since writing populates it regardless of whether that data will ever be requested.
 - **Write-behind** (also called **write-back**) — a write is applied to the cache immediately and acknowledged to the caller right away, while the actual write to the underlying database is deferred and performed asynchronously afterward (often batched with other pending writes) — like scribbling a note now and trusting you'll file it properly later. Writes are fast from the caller's perspective, but there's a real window where the cache is ahead of the database, and if the cache fails before that deferred write completes, it's lost outright — like the unfiled note. A direct trade of durability for write latency.
+
+  Contrasting write-through's synchronous dual-write with write-behind's deferred write:
+
+  ```mermaid
+  flowchart LR
+      subgraph "Write-through"
+          W1["Write"] --> C1["Cache (sync)"]
+          W1 --> D1b["Database (sync)"]
+          C1 --> ACK1["Ack to caller\n(after both complete)"]
+          D1b --> ACK1
+      end
+      subgraph "Write-behind"
+          W2["Write"] --> C2b["Cache (immediate)"]
+          C2b --> ACK2["Ack to caller\n(immediately)"]
+          C2b -.->|"deferred, async,\noften batched"| D2b["Database (later)"]
+      end
+  ```
+
 - **Refresh-ahead** — the cache proactively re-fetches a soon-to-expire entry from the underlying database *before* its TTL actually runs out, typically triggered once an entry crosses some fraction of its TTL (e.g., 80% of the way to expiry) while it's still being actively accessed — like refilling the coffee pot before it's empty rather than waiting until the last cup to start brewing. This exists specifically to prevent a **thundering herd**: a burst of many concurrent requests that all miss the cache for the same key at the same instant — because its TTL just expired right as a wave of traffic arrived — and all fall through to the database simultaneously, which can look like a traffic spike many times larger than the real request rate. Cost: refresh-ahead does real background work refreshing entries that might not actually be requested again before they'd otherwise have expired naturally.
+
+Visualizing refresh-ahead's proactive re-fetch before a thundering herd can form:
+
+```mermaid
+flowchart LR
+    ENTRY["Cache entry\n(actively accessed)"] -->|"crosses ~80% of TTL"| TRIGGER["Refresh-ahead trigger"]
+    TRIGGER --> REFETCH["Re-fetch from database\nbefore TTL expires"]
+    REFETCH --> ENTRY
+    EXPIRE["If TTL actually expires\nwith no refresh"] -.-> HERD["Thundering herd:\nmany concurrent requests\nmiss simultaneously, all hit DB"]
+```
 
 ### How?
 
@@ -261,7 +365,33 @@ Put plainly: **semantic caching is Concept 3's cache-aside algorithm, with the c
 4. **Hit** (a sufficiently similar cached prompt exists): return the cached response directly — the underlying LLM is never called for this request at all.
 5. **Miss** (nothing clears the threshold): call the LLM to generate a real response, then embed this new prompt-response pair and write it into the vector database, so a future, similar-enough prompt can hit on it.
 
+Tracing the same cache-aside shape with similarity search in place of exact-key lookup:
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant VDB as Vector database
+    participant LLM
+    App->>App: embed new prompt (Concept C1)
+    App->>VDB: query nearest cached prompt embedding
+    alt similarity clears threshold (hit)
+        VDB-->>App: cached response
+    else below threshold (miss)
+        App->>LLM: call LLM for a real response
+        LLM-->>App: response
+        App->>VDB: embed and write prompt+response
+    end
+```
+
 **Worked illustration — why the threshold matters, not just whether caching is "on."** A support chatbot's exact-match cache-aside layer (keying on the literal prompt string) measures only a 5% hit rate in practice — unsurprising, since real users phrase the same question many different ways ("how do I reset my password," "I forgot my password, help," "password reset not working"), and an exact-match cache can't see any of those as "the same question." Switching to a semantic cache with a similarity threshold of 0.95 (on a -1-to-1 cosine-similarity scale) raises the measured hit rate to roughly 40% on the same traffic, because it now recognizes differently-worded, same-intent prompts as hits. Lowering the threshold further to 0.90 would raise the hit rate again (Concept 3's hit-rate math applies exactly as before: every additional hit reduces load on the LLM backend the same way it reduced load on a database) — but at a falling threshold, the risk of a **false-positive hit** rises too: returning a cached answer to a question that was merely similar, not actually the same — something an exact-match cache (which can only ever return the literal answer to the literal same key) can't do at all, right or wrong.
+
+Visualizing how lowering the threshold trades hit rate for false-positive risk:
+
+```mermaid
+flowchart LR
+    EXACT["Exact-match cache-aside\n5% hit rate"] -->|"switch to semantic cache\nthreshold = 0.95"| SEM95["Semantic cache\n~40% hit rate"]
+    SEM95 -->|"lower threshold to 0.90"| SEM90["Higher hit rate,\nhigher false-positive-hit risk"]
+```
 
 **Trade-offs considered:** A low similarity threshold raises the semantic cache's hit rate and cost savings (per Concept 3's arithmetic), but raises the odds of serving a subtly wrong answer. A high threshold is safer but converges toward classic exact-match caching's low hit rate, giving up most of the reason to build a semantic cache at all. Same shape of trade-off as Lesson 3's CAP theorem — trading a guarantee (answer correctness for *this exact* question) for a resource win (hit rate, cost, latency) — one layer higher in the stack than a database read, but structurally the identical bet.
 

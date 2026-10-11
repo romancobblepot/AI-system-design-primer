@@ -47,6 +47,25 @@ Examples: Celery (Python, commonly backed by Redis or RabbitMQ), Sidekiq (Ruby, 
 
 One-line distinction: a message queue moves messages; a task queue moves *jobs*, and additionally tracks what happened to each one.
 
+The diagram below lines up a pub/sub message queue's fan-out against a task queue's point-to-point worker pool:
+
+```mermaid
+flowchart LR
+    subgraph MQ["Message queue -- pub/sub"]
+        P1["Producer"] --> B1[("Broker (Kafka / RabbitMQ / SQS)")]
+        B1 --> C1["Consumer 1"]
+        B1 --> C2["Consumer 2"]
+        B1 --> C3["Consumer 3"]
+    end
+    subgraph TQ["Task queue -- point-to-point"]
+        P2["Producer"] --> B2[("Broker (Celery / Sidekiq)")]
+        B2 -->|"job A"| W1["Worker 1"]
+        B2 -->|"job B"| W2["Worker 2"]
+        W1 --> R["Task status + result\n(queued, running, succeeded, failed)"]
+        W2 --> R
+    end
+```
+
 **Delivery guarantees — and why they're hard.** Every queue (message or task) has to commit to one of three **delivery guarantees**: how many times a given message actually reaches a consumer. Think of phoning a restaurant to confirm a reservation:
 
 1. **At-most-once delivery** — you call once and hang up, confirmed or not: never duplicated, but it can be silently lost if the line drops before you get through and nobody calls back. A message is delivered zero or one times (e.g. the broker crashes after removing a message from the queue but before a consumer finishes processing it).
@@ -57,6 +76,22 @@ Because at-least-once is both the easiest guarantee to implement and the most co
 
 - Idempotent: an embedding-and-store operation keyed on a stable `chunk_id` — re-embedding the same chunk overwrites its existing stored vector.
 - Not idempotent: "increment this document's processed-chunk counter by one" — redelivering the same message double-counts it.
+
+The sequence below shows at-least-once redelivery in action, and why keying the retry on `chunk_id` keeps it safe:
+
+```mermaid
+sequenceDiagram
+    participant Producer
+    participant Broker
+    participant Consumer
+    Producer->>Broker: enqueue task (chunk_id=17)
+    Broker->>Consumer: deliver task
+    Consumer->>Consumer: embed_and_store(chunk_id=17)
+    Note over Consumer: crashes before ack
+    Broker->>Consumer: redeliver (at-least-once)
+    Consumer->>Consumer: embed_and_store(chunk_id=17) -- idempotent, overwrites same vector
+    Consumer->>Broker: ack
+```
 
 ### How?
 
@@ -118,6 +153,18 @@ The name is literal, borrowed from plumbing: back pressure is what builds up whe
 - **Shed load** — drop the newest or oldest item rather than queue it, accepting data loss in exchange for a queue that never grows past its bound.
 - **Reject explicitly** — return an error the caller can react to, rather than silently blocking or dropping (e.g. HTTP **429 Too Many Requests**, the standard code telling a client it sent too much traffic and should retry later; or TCP's own flow-control window, which throttles a sender automatically once the receiver's buffer is full).
 
+The flowchart below lays out those three answers as the branches a bounded queue takes once it hits its limit:
+
+```mermaid
+flowchart LR
+    A["Producer"] --> Q[("Bounded queue, max depth 2,000")]
+    Q --> W["Worker pool, drain rate mu"]
+    Q -->|"queue at bound"| D{"Back-pressure decision"}
+    D -->|"block producer"| A
+    D -->|"shed load"| X["Drop newest/oldest task"]
+    D -->|"reject explicitly"| E["429 Too Many Requests"]
+```
+
 Back pressure is a distinct idea from **rate limiting**, even though both cap how much traffic gets through. In short: rate limiting asks whether a request is *allowed*; back pressure asks whether the system can *actually handle it right now*.
 
 - **Rate limiting** decides, in advance, how much traffic a given caller is *allowed* to send, based on a configured policy or budget (the **token bucket algorithm**, already defined in this repo's `appendix/glossary.md` from capstone #15's gateway — not re-derived here) — independent of whether the backend is actually under load right now.
@@ -150,6 +197,21 @@ time_to_full = max_queue_depth / net_growth_rate = 2,000 / 30 ≈ 66.7 seconds
 ```
 
 About 67 seconds after the burst starts, the queue hits its bound, and back pressure has to engage — a blocking `.put()` call stalls the producer, or the system starts returning 429s, or it sheds load outright. Once engaged, the effective arrival rate the queue actually accepts is capped at whatever the consumer can drain, so the queue stops growing further; it stays pinned near its bound until the burst subsides and λ drops back below μ, at which point it drains at rate `μ - λ`.
+
+The sequence below walks through this same burst, from stable queue to the moment back pressure engages:
+
+```mermaid
+sequenceDiagram
+    participant Producer
+    participant Queue as "Bounded queue (max 2,000)"
+    participant Workers as "Worker pool (mu=120/sec)"
+    Producer->>Queue: enqueue at lambda=100/sec (stable, N=25)
+    Queue->>Workers: drain at mu=120/sec
+    Note over Producer,Queue: burst -- lambda rises to 150/sec
+    Producer->>Queue: enqueue at lambda=150/sec
+    Note over Queue: net growth 30/sec, fills in about 66.7s
+    Queue-->>Producer: queue full -- blocks .put() or returns 429
+```
 
 **Trade-offs considered:**
 
@@ -191,6 +253,31 @@ Every queue in Concept 1, every back-pressure signal in Concept 2, and every RPC
 What it buys in exchange is lower overhead and lower latency for anything that doesn't need TCP's guarantees: DNS queries (Lesson 4, Concept 1) are typically single-datagram UDP exchanges specifically because they're short enough that a full TCP handshake would cost more than the query itself.
 
 A direct consequence of TCP's ordered-delivery guarantee is **head-of-line (HOL) blocking**: because TCP enforces strict in-order delivery, if one segment is lost, every byte sent *after* it — even bytes that have already physically arrived at the receiver — waits until the lost segment is retransmitted. The data isn't gone, it's just stuck behind the one piece that is — like a single-file checkout line where one jammed register stalls every customer behind it, even the ones already standing there ready to pay.
+
+The sequence below contrasts TCP's handshake-then-reliable-delivery flow with UDP's fire-and-forget datagrams:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+    rect rgb(240,240,255)
+    Note over Client,Server: TCP -- three-way handshake, then reliable, ordered delivery
+    Client->>Server: SYN
+    Server->>Client: SYN-ACK
+    Client->>Server: ACK
+    Client->>Server: data segment 1
+    Server->>Client: ACK segment 1
+    Client->>Server: data segment 2 (lost)
+    Client->>Server: retransmit segment 2
+    Server->>Client: ACK segment 2
+    end
+    rect rgb(255,245,230)
+    Note over Client,Server: UDP -- no handshake, fire-and-forget datagrams
+    Client->>Server: datagram 1
+    Client->>Server: datagram 2 (lost, never retransmitted)
+    Client->>Server: datagram 3
+    end
+```
 
 ### How?
 
@@ -246,6 +333,20 @@ Lesson 1's Concept D already established **tool use / function calling**: the me
 
 One way to hold the distinction: RPC is like phoning a specific extension and saying "do this now"; REST is like mailing a labeled package to an address and letting a small, standard set of verbs (GET/POST/PUT/DELETE) say what to do with what's inside.
 
+The sequence below puts an RPC-shaped internal tool call side by side with a REST-shaped public API call:
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Tool as "Sandboxed tool (RPC)"
+    participant Client
+    participant Gateway as "/v1/chat/completions (REST)"
+    Agent->>Tool: JSON-RPC method=run_shell_command, params={command: pytest tests/}
+    Tool-->>Agent: result (exit code, stdout)
+    Client->>Gateway: POST /v1/chat/completions {model, messages}
+    Gateway-->>Client: 200 OK -- chat-completion resource created
+```
+
 ### How?
 
 **Worked example — the same system, two different calling shapes, side by side.** An internal agent-to-tool call (RPC-shaped — an action, with arguments), using JSON-RPC 2.0:
@@ -288,6 +389,18 @@ A task running 90 times longer than a typical gateway's idle timeout cannot be s
 - a separate channel — polling the task's status, a webhook callback, or a streamed connection the client can reconnect to — for continuous progress reporting
 
 The RPC-shaped tool calls inside that background loop (the shell/editor/browser actions in the first worked example above) are themselves just as prone to taking longer than a request-timeout window, which is exactly why they run inside the task queue's worker, not behind a synchronous gateway call either.
+
+The flowchart below traces that decomposition end to end, from the REST submit call down to the RPC-shaped tool calls inside the worker:
+
+```mermaid
+flowchart LR
+    C["Client"] -->|"submit task"| S["REST endpoint -- returns task_id"]
+    S --> TQ[("Task queue")]
+    TQ --> AG["Agent-loop worker (90-min task)"]
+    AG -->|"RPC-shaped tool calls"| T["Sandboxed shell / editor / browser"]
+    C -.->|"poll / webhook / reconnect stream"| ST["Task status channel"]
+    AG --> ST
+```
 
 **A note on this Concept's sourcing:** capstone #13 is the autonomous coding agent described above, and the only capstone that fits this point — long-running coding-agent tasks, async queues, agent loops. By contrast, capstone #4, Airbnb's search-ranking system (Haldar et al., *"Applying Deep Learning to Airbnb Search,"* KDD 2019), is a listing-search-ranking model-architecture capstone with no connection to any of that, so it isn't cited here.
 

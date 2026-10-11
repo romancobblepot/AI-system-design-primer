@@ -30,6 +30,26 @@ Every request starts with a domain name like `api.example.com`, not an IP addres
 3. The root server points it to a **TLD (top-level domain) server** — e.g. the server responsible for all `.com` domains.
 4. The TLD server points it to the domain's own **authoritative name server**, which returns the actual IP address: an **A record**, the DNS record type that maps a name directly to an IPv4 address.
 
+This hop-by-hop chain, for a first-ever lookup of `api.example.com`, looks like this:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant R as Recursive resolver
+    participant Root as Root server
+    participant TLD as .com TLD server
+    participant Auth as api.example.com authoritative server
+
+    C->>R: Resolve api.example.com
+    R->>Root: Who handles .com?
+    Root-->>R: Ask the .com TLD server
+    R->>TLD: Who handles api.example.com?
+    TLD-->>R: Ask api.example.com's authoritative server
+    R->>Auth: What's the A record for api.example.com?
+    Auth-->>R: A record: 203.0.113.10 (TTL 300s)
+    R-->>C: 203.0.113.10 (cached for 300s)
+```
+
 Every DNS record is published with a **TTL (time to live)** — how many seconds a resolver may cache that answer before looking it up again. A short TTL means cached answers go stale and get re-checked quickly; a long TTL means fewer repeat lookups but slower propagation of any change.
 
 Beyond a plain A record, authoritative DNS services support **routing policies** that return a *different* answer depending on context, instead of always returning the same IP:
@@ -37,6 +57,15 @@ Beyond a plain A record, authoritative DNS services support **routing policies**
 - **Weighted round robin** — returns different IPs to different queries according to configured weights (e.g. 70% of queries get region A's IP, 30% get region B's). Used for traffic splitting (e.g. a gradual rollout), not true failover.
 - **Latency-based routing** — returns whichever registered endpoint has historically had the lowest network latency from the resolver's location.
 - **Geolocation-based routing** — returns the endpoint registered as closest to (or designated for) the querying resolver's geographic region, regardless of measured latency.
+
+Weighted round robin, applied to `api.example.com`, routes different queries to different regional IPs based on their configured weight:
+
+```mermaid
+flowchart LR
+    Q["Query: api.example.com"] --> DNS["Authoritative DNS\nweighted routing policy"]
+    DNS -->|"70% weight"| A["Region A\n203.0.113.10"]
+    DNS -->|"30% weight"| B["Region B\n198.51.100.20"]
+```
 
 ### How?
 
@@ -77,6 +106,24 @@ A **CDN (Content Delivery Network)** is a geographically distributed network of 
 - **Push CDN** — the origin proactively uploads content to CDN nodes before any user requests it. Good for content that changes rarely and needs every edge node primed in advance; you pay for storage of everything you push, whether or not it's ever requested.
 - **Pull CDN** — the CDN fetches content from the origin the first time *any* user requests it through a given edge node (a **cache miss**), then serves later requests from cache until the entry expires. Good for content that changes often and for skipping manual uploads — at the cost of a slower first request per edge node (it has to round-trip to the origin first).
 - **Cache hit ratio** — the percentage of requests an edge node serves directly from cache, versus falling through to the origin (a **cache miss** — either a first-ever request or an expired entry). A higher hit ratio means less load reaching the origin.
+
+Push and pull CDNs differ in when content first reaches the edge node relative to when a user actually asks for it:
+
+```mermaid
+flowchart TD
+    subgraph Push["Push CDN"]
+        O1["Origin server"] -->|"proactively uploads JS bundle/CSS/logo"| E1["Edge node"]
+        U1["User request"] --> E1
+        E1 -->|"always warm"| R1["Served from cache"]
+    end
+    subgraph Pull["Pull CDN"]
+        U2["User request"] --> E2["Edge node"]
+        E2 -->|"cache miss (first request)"| O2["Origin server"]
+        O2 -->|"content fetched + cached"| E2
+        U3["Later request"] --> E2
+        E2 -->|"cache hit"| R2["Served from cache"]
+    end
+```
 
 **Why model weights themselves are a poor CDN fit.** It's tempting to treat a model's weight file like any other large static file — cache it at the edge, same as a video or a dataset. Three things break that analogy:
 
@@ -129,9 +176,31 @@ A **load balancer** distributes incoming requests across multiple backend server
 
 The difference is visibility, not just mechanism: think of L4 as a mail sorter who only reads the address on the envelope, and L7 as one who opens the envelope and reads the letter before deciding where it goes.
 
+L4 routes on connection info alone, while L7 can read the `model` field inside a `/v1/chat/completions` request and route accordingly:
+
+```mermaid
+flowchart LR
+    REQ["POST /v1/chat/completions\nmodel: large-context-model-v2"] --> L4["L4 load balancer\n(sees only 203.0.113.10:443)"]
+    REQ --> L7["L7 load balancer\n(parses path + model field)"]
+    L4 -->|"same decision for every request to this IP:port"| POOL["Single backend pool"]
+    L7 -->|"model = large-context-model-v2"| BIG["High-memory GPU pool"]
+    L7 -->|"model = smaller/cheaper model"| SMALL["Leaner GPU pool"]
+```
+
 **SSL/TLS termination** is when the load balancer decrypts incoming HTTPS traffic itself (ending, or "terminating," the encrypted connection there) and forwards the plaintext request to backend servers over an internal network. This offloads the handshake-and-decryption cost from every backend onto the load balancer — at the cost of that internal hop being unencrypted, unless it's deliberately re-encrypted too (a pattern called **SSL bridging**).
 
 **Session persistence** (also called **sticky sessions**) routes all requests from the same client to the *same* backend instance, instead of spreading them freely — needed whenever a backend holds per-client state other replicas don't share.
+
+Without session persistence, a multi-turn conversation's follow-up request can land on a replica that doesn't hold its KV cache, forcing a costly recompute:
+
+```mermaid
+flowchart LR
+    T1["Turn 1 request"] --> LB["Load balancer"]
+    LB --> R1["Replica 1\n(builds KV cache)"]
+    T2["Turn 2 request\n(same client)"] --> LB
+    LB -->|"no session persistence"| R2["Replica 2\n(no KV cache -> recompute)"]
+    LB -.->|"with session persistence"| R1
+```
 
 ### How?
 
@@ -184,6 +253,22 @@ A **reverse proxy** is a server that sits in front of one or more backend server
 The distinction from a load balancer: a **load balancer's** defining job is distributing traffic across *multiple* backend instances, for scale and availability. A reverse proxy doesn't have to balance anything — it can sit in front of exactly one backend and still do useful work. In practice, most real products collapse both roles: NGINX, Envoy, and the LLM-gateway products referenced below are simultaneously reverse proxies, load balancers, L7 routers, and rate limiters, all in the same box.
 
 A **rate limit** caps how much traffic a client is allowed to send in a given time window, to protect backends from being overwhelmed and to enforce fair usage or billing tiers. The classic version is **request-based rate limiting** (e.g. "100 requests per minute per API key").
+
+A reverse proxy's job (intermediary, even for one backend) is distinct from a load balancer's job (distributing across many):
+
+```mermaid
+flowchart LR
+    subgraph RP["Reverse proxy (single backend)"]
+        C1["Client"] --> P1["Reverse proxy\nSSL termination, caching, rate limits"]
+        P1 --> S1["Single backend server"]
+    end
+    subgraph LBd["Load balancer (multiple backends)"]
+        C2["Client"] --> P2["Load balancer"]
+        P2 --> S2["Backend replica 1"]
+        P2 --> S3["Backend replica 2"]
+        P2 --> S4["Backend replica 3"]
+    end
+```
 
 ### How?
 

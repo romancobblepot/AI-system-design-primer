@@ -34,6 +34,23 @@ For an LLM-serving app specifically, latency splits into pieces that don't exist
 
 **Token-generation throughput** is the aggregate rate, across all requests a serving system is currently handling, at which it produces output tokens (tokens/sec) — the AI-world equivalent of **QPS** (queries per second, the classic system-design-primer measure of requests handled per second), except measured at the token level because that's the unit the GPU is actually spending its compute on.
 
+The sequence below shows where TTFT and inter-token latency each fall within a single request's timeline:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Serving engine
+
+    C->>S: Request (full prompt)
+    Note over S: Process entire input prompt
+    S->>C: Token 1 (TTFT)
+    Note over S: Inter-token latency
+    S->>C: Token 2
+    Note over S: Inter-token latency
+    S->>C: Token 3
+    Note over S,C: ... continues until total completion time = TTFT + (output_tokens - 1) x inter-token latency
+```
+
 This is also why "scalable" means something subtly different here than for a CRUD app: a CRUD app is usually scalable if it keeps response times flat as more *users* connect — mostly a matter of adding web servers and database read replicas. An LLM-serving app must also scale along a second, AI-specific axis: it needs to keep *generating tokens* at an acceptable rate as more concurrent requests compete for the same fixed pool of GPU memory, most of which is consumed by the **KV cache** (the per-request memory Lesson 1's Concept B1 defines, which grows with every token generated) — so "add more hardware" has a harder ceiling here than for a stateless web server.
 
 ### How?
@@ -47,6 +64,17 @@ This is also why "scalable" means something subtly different here than for a CRU
 | 32 requests | 80 ms/token (even more contention) | 32 × (1000 ms / 80 ms) = **400 tokens/sec** |
 
 Going from batch size 1 to 32 increases per-token latency by 60% (50ms → 80ms) — each request's stream gets slightly slower — but increases total system throughput by 20x (20 → 400 tokens/sec). Neither number is "the" answer: a chat product optimizing for a snappy single conversation wants small batches and low per-token latency; a backend summarizing a million documents overnight wants maximum aggregate throughput and doesn't care that any one summary takes slightly longer.
+
+The same trade-off, laid out as the batch-size knob moving in one direction while two outcomes move in opposite directions:
+
+```mermaid
+flowchart LR
+    B1["Batch size 1\n50 ms/token\n20 tokens/sec"] -->|"+8x requests\n(more GPU contention)"| B8["Batch size 8\n60 ms/token\n133 tokens/sec"]
+    B8 -->|"+4x requests\n(even more contention)"| B32["Batch size 32\n80 ms/token\n400 tokens/sec"]
+
+    B1 -.->|"optimizes for"| CHAT["Snappy single conversation\n(low per-token latency)"]
+    B32 -.->|"optimizes for"| BATCH["Overnight bulk summarization\n(max aggregate throughput)"]
+```
 
 **Trade-offs considered:** Larger batch sizes raise aggregate throughput but raise every request's latency, and push GPU memory pressure up (more concurrent KV caches resident at once) — there's no batch size that's simply "better," only one that matches a given product's actual latency SLA (service-level agreement — a committed maximum response time) and GPU budget.
 
@@ -76,6 +104,15 @@ Any system that keeps more than one copy of data — every AI application with a
 
 In practice, partitions happen (networks are unreliable), so the real-world choice is between **CP** (consistent but may refuse to answer during a partition) and **AP** (available but may return stale data during a partition) — "choosing C over A" vs. "choosing A over C," not a free selection of all three.
 
+The diagram below shows the same write-then-read request hitting a partitioned 3-replica vector database under each choice:
+
+```mermaid
+flowchart TD
+    W["Write arrives at replica 1\n(replicas 2 and 3 unreachable: partition)"] --> CHOICE{"Partition tolerance\nis a given — choose one more"}
+    CHOICE -->|"CP: pick Consistency"| CP["Refuse the read/write\n(error) until replica 1 can\nconfirm with a quorum again"]
+    CHOICE -->|"AP: pick Availability"| AP["Serve the read from\nreplica 1 anyway —\nmay return stale data"]
+```
+
 That choice shows up as a **consistency pattern**, describing how far behind a read is allowed to be from the most recent write:
 
 - **Strong consistency** — after a write completes, every subsequent read, from any replica, sees that write immediately. Achieved by making a write wait for acknowledgment from enough replicas before it's considered "done" (a **quorum write** — e.g. requiring 2 of 3 replicas to confirm before telling the client the write succeeded).
@@ -94,6 +131,34 @@ That choice shows up as a **consistency pattern**, describing how far behind a r
 | t = 250ms | All 3 replicas have converged; reads everywhere now return the new value | (already consistent since t = 120ms) |
 
 The strong-consistency write took until t = 120ms to be considered complete (the client-perceived latency cost of waiting for a quorum) — the eventual-consistency write returned to the client immediately at t = 0ms, but any read in the 50-250ms window had a real chance of seeing stale data.
+
+The same timeline as a sequence of events, contrasting both models side by side:
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant EC as Eventual-consistency replicas
+    participant SC as Strong-consistency replicas (2-of-3 quorum)
+
+    App->>EC: Write embedding (t=0ms)
+    EC-->>App: Ack immediately (t=0ms)
+    App->>SC: Write embedding (t=0ms)
+    Note over SC: Write blocks, waiting for 2 replica acks
+
+    App->>EC: Read (t=50ms)
+    EC-->>App: May return OLD value
+    App->>SC: Read (t=50ms)
+    Note over SC: Write still in-flight (quorum not reached)
+
+    Note over SC: 2 of 3 replicas ack (t=120ms)
+    SC-->>App: Write now returns success
+    App->>SC: Read (t=120ms+)
+    SC-->>App: Correctly returns NEW value
+
+    Note over EC: All 3 replicas converge (t=250ms)
+    App->>EC: Read (t=250ms)
+    EC-->>App: Now returns NEW value
+```
 
 **Trade-offs considered:** Strong consistency removes the "did I just get stale data" question but adds real latency to every write (and sometimes to reads too, if reads also require a quorum) — eventual consistency is faster and simpler to scale but pushes the "is this fresh enough" question onto the application. Neither is strictly correct; a vector database backing a RAG system updated nightly can tolerate eventual consistency easily (nobody notices a few hundred milliseconds of staleness), while a system where an agent writes a fact and immediately needs to read it back in the same turn cannot.
 
@@ -129,6 +194,23 @@ An LLM-serving application is rarely one component — it's typically a chain: a
 - **Active-passive failover** — one replica (the "active") handles all live traffic; one or more standby ("passive") replicas sit idle, ready to take over only if the active one fails. There's a **failover delay** — the time to detect the failure and promote a standby — during which requests may fail.
 - **Active-active failover** — multiple replicas handle live traffic *simultaneously*, all the time; if one fails, the others are already serving, so there's no cutover delay, only reduced total capacity until the failed node is replaced.
 
+The two patterns applied to the inference-backend component from the worked example below:
+
+```mermaid
+flowchart LR
+    subgraph AP["Active-passive"]
+        REQ1["Request"] --> ACT1["Active inference backend\n(serving)"]
+        ACT1 -.->|"active fails ->\nfailover delay ->\npromote standby"| PASS1["Passive inference backend\n(idle standby)"]
+    end
+
+    subgraph AA["Active-active"]
+        REQ2["Request"] --> LB["Load balancer\n(Lesson 4)"]
+        LB --> ACT2["Inference backend replica 1\n(serving)"]
+        LB --> ACT3["Inference backend replica 2\n(serving)"]
+        ACT2 -.->|"replica 1 fails ->\nno cutover delay,\nreplica 2 already serving"| ACT3
+    end
+```
+
 How individual component availabilities combine into a *system's* availability depends on whether components are chained or redundant:
 
 - **Availability in series** (a request must pass through component A, then B, then C, in sequence — if any one fails, the whole request fails): combined availability = A × B × C (each expressed as a fraction, e.g. 99.9% = 0.999). Chaining components in series always makes the combined system *less* available than its weakest link, never more.
@@ -159,6 +241,19 @@ combined = 0.9995 × 0.999999 × 0.9999
          ≈ 0.999399   →  99.9399% available
 ```
 That's roughly **5.3 hours of downtime per year** (0.000601 × 525,600 minutes/year ≈ 316 minutes ≈ 5.3 hours) — making just the single weakest component redundant took the whole chain from ~14 hours/year of downtime down to ~5.3 hours/year, nearly a 3x improvement, without touching the gateway or the vector DB at all.
+
+Both chains, series vs. the one component made parallel, side by side:
+
+```mermaid
+flowchart LR
+    subgraph Series["Series (no redundancy) -> 99.8401% (~14 hrs/yr downtime)"]
+        G1["Gateway\n99.95%"] --> I1["Inference backend\n99.9%"] --> V1["Vector DB\n99.99%"]
+    end
+
+    subgraph Redundant["Series with backend made active-active -> 99.9399% (~5.3 hrs/yr downtime)"]
+        G2["Gateway\n99.95%"] --> P["Inference backend pair\n(parallel) -> 99.9999%"] --> V2["Vector DB\n99.99%"]
+    end
+```
 
 A small runnable Python snippet for this arithmetic:
 

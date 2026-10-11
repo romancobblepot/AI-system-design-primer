@@ -27,6 +27,19 @@ A **monolith** is an application built and deployed as a single, unified unit �
 
 The **single responsibility principle (SRP)** decides where those lines go: a component should have one, and only one, reason to change — responsible for one well-defined piece of behavior, not several unrelated ones bundled together for convenience. SRP is why "split into microservices" isn't the same question as "split into *how many*" — the right number and shape of services falls out of identifying distinct responsibilities, not picking an arbitrary piece count.
 
+The contrast below shows the same support-chatbot responsibility set, deployed the two ways this Concept names:
+
+```mermaid
+flowchart TB
+    subgraph MONO["Monolith — one deployable unit"]
+        M["Single process:\nreceive message -> build prompt -> call model -> return response"]
+    end
+    subgraph MICRO["Microservices — SRP-split deployable units"]
+        SUP["Supervisor service\n(routes request)"] --> SPEC["Specialist service\n(e.g. billing, returns)"]
+        SPEC --> VAL["Validator service\n(checks proposed response)"]
+    end
+```
+
 ### How?
 
 **Worked example — decomposing one responsibility at a time, then paying for it in Lesson 3's availability math.** Take a single-model customer-support chatbot built as one monolith: one process receives the message, builds the prompt, calls the model, and returns the response — one responsibility in one deployable unit, measured at 99.9% availability (Lesson 3 Concept 3's own single-component figure).
@@ -84,6 +97,25 @@ Two concrete shapes this takes in practice:
 - **Consul** — HashiCorp's service-networking tool, combining a service registry with built-in health checking and a DNS/HTTP interface for looking up healthy instances.
 - **etcd** — a distributed, strongly-consistent key-value store built on the **Raft consensus algorithm** (a protocol by which a cluster of nodes agrees on a single, consistent sequence of state changes even if some nodes fail), used internally by Kubernetes itself to track, among other cluster state, which pods/service endpoints currently exist.
 - **Zookeeper** — an older Apache coordination service providing distributed locks, configuration storage, and group membership — the mechanism, for instance, Kafka brokers historically used to discover each other and agree on cluster leadership.
+
+The sequence below shows a `llm-inference-backend` replica registering with a Consul-style registry, and a caller using client-side discovery to find a healthy instance of it:
+
+```mermaid
+sequenceDiagram
+    participant R as inference-replica-07
+    participant Reg as Service registry (Consul)
+    participant C as Caller
+
+    R->>Reg: Register (ID, Name="llm-inference-backend", Address, Port)
+    loop Every health-check Interval
+        Reg->>R: GET /health
+        R-->>Reg: 200 OK (healthy)
+    end
+    C->>Reg: Query healthy instances of "llm-inference-backend"
+    Reg-->>C: [inference-replica-07, ...]
+    C->>R: Request (picked via load-balancing strategy)
+    R-->>C: Response
+```
 
 ### How?
 
@@ -164,6 +196,18 @@ Per `system-design-primer`'s own "Security" section, confirmed directly against 
 **Input sanitization** is checking, filtering, or transforming untrusted input before it's used, so it can't be interpreted as something other than inert data by whatever processes it next. The classic example `system-design-primer` names directly is **SQL injection** — untrusted input containing SQL syntax that, if concatenated directly into a query string, gets executed as part of the query itself rather than treated as a literal value — mitigated by **parameterized queries** (passing user input to the database as a separate, explicitly-typed parameter, never concatenated into the query text, so the database engine can never confuse "data" for "code"). The AI-specific extension of this principle — which Lesson 8's F1 covers in depth, not repeated here — is that an LLM's "input" isn't only the end user's literal typed message: it's also every retrieved RAG chunk and every tool-call result the model reads (Lesson 1's Concept A1, "prompt as attack surface"), none of which has gone through anything resembling a SQL parameter boundary. The general principle — untrusted input needs to be checked before it's trusted — is identical; the mechanism for enforcing that boundary on natural-language input is genuinely different from a parameterized query, which is why it gets its own full Concept in Lesson 8 rather than a one-line corollary here.
 
 **Least privilege** is the principle of granting any identity, process, service, or credential only the minimum set of permissions it actually needs to do its job — and no more. A credential scoped to least privilege can still cause damage if it's leaked or misused, but only within the narrow boundary it was actually granted; a broad, convenient "just give it admin" credential turns the exact same leak into a catastrophically larger incident. The AI-specific extension — Lesson 8's F3, not repeated here — is applying this per-tool: an agent that can call five different tools shouldn't have one shared, maximally-permissive credential behind all five; each tool's own access should be scoped to only what that specific tool needs.
+
+The flow below traces one request through these four checks, from the wire to a scoped tool call:
+
+```mermaid
+flowchart LR
+    REQ["Incoming request"] --> TLS["Encryption in transit\n(TLS / mTLS handshake)"]
+    TLS --> SAN["Input sanitization\n(parameterized queries,\nno raw SQL concatenation)"]
+    SAN --> LP["Least-privilege check\n(does this tool's credential\nhave only s3:GetObject\non support-kb-bucket/*?)"]
+    LP -->|"authorized within scope"| TOOL["Retrieval tool executes"]
+    TOOL --> REST["Encryption at rest\n(SSEAlgorithm: AES256\non stored objects)"]
+    LP -->|"reason: exceeds scoped permissions"| DENY["Request denied"]
+```
 
 ### How?
 
@@ -297,6 +341,16 @@ required_throughput = 360,000,000 tokens / 14,400 seconds = 25,000 tokens/sec  (
 **Step 4 — sanity-check the order of magnitude.** Cross-referencing against Lesson 3's Concept 1 batch-size table (itself an illustrative, not production-measured, hypothetical: batch size 32 → 400 tokens/sec aggregate on one GPU-equivalent unit), a required 25,000 tokens/sec implies roughly `25,000 / 400 ≈ 63` GPU-equivalent units running at that batch size — in the same broad range (tens, not hundreds or thousands) as capstone #10's own Step 2 estimate of ~24 GPUs for a comparable-order-of-magnitude concurrency target. The two estimates aren't meant to match exactly (they're sized for different assumptions and different model/hardware configurations) — the point of this sanity check is confirming "a few dozen GPUs" is the right order of magnitude for this scenario, not "6" and not "6,000," either of which would mean a real mistake happened somewhere in Step 3's arithmetic.
 
 **Step 5 — name the most sensitive assumption.** The $4,500/day cost figure splits exactly evenly between its input-token half ($2,250) and output-token half ($2,250) at these particular assumptions — but the input-token half is the one most likely to move in practice, because it's driven by how much retrieved context a RAG system injects per query (Lesson 1's Concept C3/C4), a design choice, not a fixed constant the way a typical response length more often is. A RAG system that ends up retrieving and injecting twice as much context per query (3,000 input tokens instead of 1,500) roughly doubles the input-token half of the daily cost directly ($2,250 → $4,500), pushing the daily total from $4,500 to $6,750 — a 50% total increase — with no change to anything else in the estimate. That's the number worth actually measuring in a prototype before trusting the rest of this estimate's conclusions.
+
+The diagram below walks the same five steps through this worked example's own numbers, end to end:
+
+```mermaid
+flowchart TD
+    A1["Step 1: Assumptions\n50,000 users · 10 msgs/user/day\n1,500 input tok/msg · 300 output tok/msg\n$3/1M input · $15/1M output · 40% in 4h peak"] --> A2["Step 2: Decompose\ndaily_messages, daily_input_tokens,\ndaily_output_tokens, daily_cost, peak_tokens"]
+    A2 --> A3["Step 3: Compute with units\n500,000 msgs/day\n750M input tok/day · 150M output tok/day\n$4,500/day ($2,250 + $2,250)\n25,000 tokens/sec peak"]
+    A3 --> A4["Step 4: Sanity-check\n25,000 / 400 tok-per-sec-per-GPU ~= 63 GPU-equivalents\n-- same order of magnitude as capstone #10's ~24 GPUs"]
+    A4 --> A5["Step 5: Most sensitive assumption\ninput-context size: doubling to 3,000 tok/msg\npushes $4,500/day -> $6,750/day (+50%)"]
+```
 
 **Trade-offs considered:** A back-of-envelope estimate trades precision for speed — it's deliberately not a substitute for real load-testing or production telemetry (Step 6 of every capstone's own 6-step method) before committing real infrastructure spend, but it's fast enough to run during a design discussion, which real benchmarking never is. Skipping it entirely and going straight to "let's just build it and see" risks discovering an order-of-magnitude mistake (needing 60 GPUs, not 6) only after real money and engineering time have already been spent — exactly the failure mode this technique exists to catch early and cheaply.
 
