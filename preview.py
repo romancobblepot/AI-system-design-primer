@@ -70,10 +70,21 @@ def render_md(rel_path):
     body = (
         '<div id="content" class="markdown-body">Loading…</div>'
         '<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>'
-        "<script>"
+        '<script type="module">'
+        "import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs';"
+        "mermaid.initialize({ startOnLoad: false, theme: 'dark' });"
         f"fetch('/__raw/{urllib.parse.quote(rel_path)}')"
         ".then(r => r.text())"
-        ".then(md => document.getElementById('content').innerHTML = marked.parse(md));"
+        ".then(md => {"
+        "  document.getElementById('content').innerHTML = marked.parse(md);"
+        "  document.querySelectorAll('code.language-mermaid').forEach(el => {"
+        "    const pre = document.createElement('pre');"
+        "    pre.className = 'mermaid';"
+        "    pre.textContent = el.textContent;"
+        "    el.parentElement.replaceWith(pre);"
+        "  });"
+        "  mermaid.run();"
+        "});"
         "</script>"
     )
     return PAGE.format(title=rel_path, breadcrumb=breadcrumb_html(rel_path), body=body)

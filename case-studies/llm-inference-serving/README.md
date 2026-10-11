@@ -10,7 +10,7 @@
 
 ## Step 1: Clarify Requirements & Frame the Objective
 
-Unlike a classic ML-prediction capstone (where Step 1's objective is a metric like precision@k or CTR), this is an infrastructure capstone — its "objective" is a set of **SLA** (service-level agreement — a committed performance target) and cost targets, not a prediction-quality metric. That's a legitimate variant of this step, not a shortcut around it: get these targets wrong and every downstream architecture decision (Steps 4-5) optimizes for the wrong thing, exactly the failure mode Step 1 exists to prevent.
+Unlike a classic ML-prediction capstone, where Step 1's objective is a metric like precision@k or CTR, this infrastructure capstone's "objective" is a set of **SLA** (service-level agreement — a committed performance target) and cost targets, not a prediction-quality metric. Getting these targets wrong lets every downstream architecture decision (Steps 4-5) optimize for the wrong thing — exactly what Step 1 exists to prevent.
 
 **Functional scope:** Serve chat-completion-style requests (a prompt in, a streamed sequence of generated tokens out) for a single, already-trained LLM, across many concurrent users and conversations, on a fixed pool of GPU hardware.
 
@@ -20,7 +20,7 @@ Unlike a classic ML-prediction capstone (where Step 1's objective is a metric li
 - **Aggregate token-generation throughput** — the system-wide rate (tokens/sec) the serving cluster sustains under peak load.
 - **Cost per 1M tokens served** — the actual dollar cost target, derived from GPU-hour cost divided by tokens served, which Step 2 and Step 6 both depend on.
 
-**Equivalent of "ground truth / feedback signal":** for a prediction task this would be labeled data; here it's the production SLO (service-level objective — the internal target a team holds itself to, usually stricter than the externally promised SLA) compliance measurements themselves — real measured p99 latency and real measured cost-per-token, tracked continuously (Step 6), compared against the targets stated above.
+**Equivalent of "ground truth / feedback signal":** for a prediction task this would be labeled data; here it's SLO (service-level objective — the internal target a team holds itself to, usually stricter than the externally promised SLA) compliance — real measured p99 latency and cost-per-token, tracked continuously (Step 6) against the targets above.
 
 **Explicitly out of scope:** multi-provider routing and fallback (capstone #15), model training/fine-tuning, and output-quality evaluation (Lesson 9).
 
@@ -55,7 +55,7 @@ KV cache for one full-length request = 2,500 tokens × 0.5 MB/token = 1,250 MB �
 Max concurrent full-length requests per GPU ≈ 52GB / 1.22GB ≈ 42 requests
 ```
 
-To sustain the targeted 1,000 concurrent conversations cluster-wide, this implies roughly **1,000 / 42 ≈ 24 GPUs** of this class are needed *purely to hold KV cache* — a cluster-sizing number driven by memory capacity, not by how many FLOPs these GPUs can compute. This is the concrete evidence behind the capstone's own stated lesson: GPU compute (FLOPs) is rarely what runs out first in LLM serving; GPU memory, consumed by the KV cache, is.
+To sustain the targeted 1,000 concurrent conversations cluster-wide, this implies roughly **1,000 / 42 ≈ 24 GPUs** of this class are needed *purely to hold KV cache* — a cluster-sizing number driven by memory capacity, not by how many FLOPs these GPUs can compute. This is concrete evidence for the capstone's core lesson: in LLM serving, GPU memory — not compute — is usually what runs out first, consumed by the KV cache.
 
 **Trade-offs considered:** A smaller or more aggressively quantized model (Lesson 1's Concept B1 defines quantization) shrinks both the weight memory *and* the per-token KV-cache size proportionally, buying more concurrent-request headroom per GPU at some cost to output quality. Architectural changes like multi-query or grouped-query attention (sharing key/value projections across multiple attention heads) reduce per-token KV-cache size directly — but that's a training-time model-architecture decision, not something a serving team can retrofit onto an already-trained model at serving time.
 
@@ -63,7 +63,7 @@ To sustain the targeted 1,000 concurrent conversations cluster-wide, this implie
 
 ## Step 3: Data / Knowledge Pipeline
 
-For a classic ML-prediction capstone, this step is about training data — collection, labeling, freshness. That doesn't apply here in the same shape, and it would be dishonest to pretend it does: **this capstone has no training-data pipeline at all** — it serves an already-trained, fixed model. What actually "flows through" this system operationally is:
+For a classic ML-prediction capstone, this step covers training-data collection, labeling, and freshness. That doesn't apply here: **this capstone has no training-data pipeline** — it serves an already-trained, fixed model. What actually flows through this system operationally is:
 
 - **Incoming prompts** — the user's (or upstream application's) input text, tokenized on arrival.
 - **Generated output tokens** — streamed back to the caller as they're produced.
@@ -78,21 +78,36 @@ For a classic ML-prediction capstone, this step is about training data — colle
 
 ### Why naive KV-cache allocation wastes memory
 
-A naive serving system allocates each request's KV cache as a single contiguous block of GPU memory, sized up front for that request's *maximum possible* sequence length (since a basic attention implementation expects its K/V tensors to sit in one contiguous memory region). This produces two distinct kinds of waste, borrowing the vocabulary from operating-systems memory management:
-- **Internal fragmentation** — if a request's actual generation ends up shorter than the maximum length it reserved space for, that unused reserved space sits idle inside the block and can't be handed to any other request, even though it's technically "free."
-- **External fragmentation** — as different requests of different reserved sizes finish and free their memory at different times, the freed space ends up scattered into a patchwork of gaps too small or oddly-placed to satisfy a new request's contiguous-block requirement, even when the *total* free memory would otherwise be enough.
+A naive serving system allocates each request's KV cache as one contiguous GPU-memory block, sized up front for its *maximum possible* sequence length, since a basic attention implementation expects its K/V tensors in one contiguous region. This produces two kinds of waste, borrowing OS memory-management vocabulary:
+- **Internal fragmentation** — if a request's actual generation ends up shorter than the max length it reserved space for, that unused space sits idle inside the block, unusable by any other request even though it's technically "free."
+- **External fragmentation** — as differently-sized requests finish and free memory at different times, the freed space becomes a patchwork of gaps too small or oddly-placed to satisfy a new request's contiguous-block requirement, even when total free memory would otherwise be enough.
 
 The vLLM paper reports that systems using this naive approach waste roughly **60-80% of allocated KV-cache memory** to exactly these two effects.
 
 ### What PagedAttention does instead
 
-**PagedAttention** borrows the core idea of **virtual memory paging** from operating systems: instead of giving a process one contiguous block of physical memory, an OS divides its logical address space into fixed-size **pages**, maps each page to a (possibly non-contiguous) physical memory **frame** via a **page table**, and lets the process address memory logically without caring where its pages actually sit physically.
+**PagedAttention** borrows **virtual memory paging** from operating systems: instead of giving a process one contiguous block of physical memory, an OS divides its logical address space into fixed-size **pages**, maps each to a (possibly non-contiguous) physical memory **frame** via a **page table**, and lets the process address memory logically without knowing where its pages physically sit.
 
-PagedAttention applies the same idea to KV cache: each request's KV cache is divided into fixed-size **blocks** (the KV-cache analog of a page), which can be stored **non-contiguously** anywhere in GPU memory. A per-request **block table** (the analog of a page table) tracks which physical block holds which logical position in that request's sequence. Critically, vLLM's custom GPU attention kernel is written to read K/V values across these non-contiguous blocks directly — something a naive contiguous-memory attention implementation cannot do — so this isn't just a bookkeeping change, it required a new attention kernel to actually exploit it.
+PagedAttention applies this to KV cache: each request's KV cache is divided into fixed-size **blocks** (the page analog), stored **non-contiguously** anywhere in GPU memory. A per-request **block table** (the page-table analog) tracks which physical block holds which logical position in the sequence. This isn't just bookkeeping — vLLM's custom GPU attention kernel is written to read K/V values across non-contiguous blocks directly, something a naive contiguous-memory implementation can't do, so a new kernel was required to exploit it.
 
-Because any free block, located anywhere in memory, can now be handed to any request that needs one more block, both fragmentation types above are eliminated at the source rather than mitigated: there's no "reserved-but-unused" internal waste (blocks are only allocated as a sequence actually grows, one block at a time) and no external fragmentation (there is no contiguous-block requirement left to violate). The paper reports this reduces memory waste from the naive system's 60-80% down to under 4%.
+Because any free block, anywhere in memory, can be handed to any request needing one more, both fragmentation types are eliminated at the source rather than mitigated: no "reserved-but-unused" internal waste (blocks allocate only as a sequence grows, one at a time) and no external fragmentation (no contiguous-block requirement to violate). The paper reports this cuts memory waste from 60-80% down to under 4%.
 
-**Cross-request block sharing:** because blocks are addressed indirectly through a block table rather than owned exclusively by one request, multiple requests sharing an identical prefix — e.g. several parallel decodes sampling from the same prompt, or multiple users whose conversations start with the same long system prompt — can literally point their block tables at the *same* physical blocks for that shared prefix, using **copy-on-write** (the same mechanism behind OS process forking: multiple logical owners share one physical copy until one of them needs to modify it, at which point only that owner gets a private copy). This turns a shared prefix into a one-time memory cost instead of a per-request duplicate.
+**Cross-request block sharing:** because blocks are addressed indirectly through a block table rather than owned exclusively by one request, multiple requests sharing an identical prefix — e.g. parallel decodes from the same prompt, or users whose conversations share a long system prompt — can point their block tables at the *same* physical blocks, using **copy-on-write** (the mechanism behind OS process forking: multiple owners share one physical copy until one needs to modify it, at which point only that owner gets a private copy). This turns a shared prefix into a one-time cost instead of a per-request duplicate.
+
+```mermaid
+flowchart LR
+    subgraph Naive["Naive allocation"]
+        R1["Request"] --> C1["One contiguous block\n(sized for max length)"]
+        C1 --> W1["60-80% wasted\n(internal + external fragmentation)"]
+    end
+    subgraph Paged["PagedAttention"]
+        R2["Request"] --> BT["Block table\n(logical → physical)"]
+        BT --> B1["Physical block 1"]
+        BT --> B2["Physical block 2\n(non-contiguous)"]
+        BT --> B3["Physical block N"]
+        B1 & B2 & B3 --> W2["<4% wasted"]
+    end
+```
 
 A simplified sketch of the core allocator logic (illustrative, not vLLM's actual production code):
 
@@ -125,13 +140,33 @@ class PagedKVCacheAllocator:
 
 ## Step 5: Serving Architecture
 
-The request lifecycle: an incoming request is tokenized and placed in a waiting queue. A **scheduler** admits waiting requests into the currently **running batch** as soon as enough free KV-cache blocks exist to hold at least one more block for a new or continuing request — note that admission is gated on *free blocks*, not on a fixed request-count limit, which is itself a direct consequence of Step 4's design. Each decode step, every request currently in the running batch produces one new token and consumes (at most) one new block; requests that finish free their blocks back into the shared pool for waiting requests.
+The request lifecycle, shown in the diagram below:
+- An incoming request is tokenized and placed in a **waiting queue**.
+- A **scheduler** admits waiting requests into the **running batch** as soon as enough free KV-cache blocks exist to hold at least one more block for a new or continuing request — admission is gated on *free blocks*, not a fixed request-count limit, a direct consequence of Step 4's design.
+- Each decode step, every request in the running batch produces one new token and consumes at most one new block.
+- Finished requests free their blocks back into the shared pool.
 
-Under memory pressure, the scheduler can use **preemptive scheduling**: temporarily evicting a lower-priority or longer-running request's blocks out to CPU memory (**swapping**, the same term used for OS virtual-memory swapping), freeing GPU memory immediately for a higher-priority request, then swapping the evicted request's blocks back into GPU memory to resume it later — trading a slower resume (the CPU-to-GPU transfer cost) for not having to reject the new request outright.
+Under memory pressure, the scheduler can use **preemptive scheduling**:
+- Temporarily evict a lower-priority or longer-running request's blocks to CPU memory (**swapping**, the OS virtual-memory term), freeing GPU memory for a higher-priority request.
+- Later, swap the evicted blocks back in to resume that request.
+- The trade-off: a slower resume (the CPU-to-GPU transfer cost) in exchange for not rejecting the new request outright.
 
-**This is the same batch-size/throughput-latency knob Lesson 3's Concept I1 walks through, applied at the scale this paper's benchmarks report.** Lesson 3's I1 table shows batch size trading per-token latency for aggregate throughput at a small illustrative scale (batch 1 → 20 tokens/sec at 50ms/token; batch 32 → 400 tokens/sec at 80ms/token). PagedAttention is what lets that batch size actually grow large in production — at the scale where GPU *memory* (not GPU compute) is the binding constraint, exactly the regime Step 2's arithmetic above puts this system in.
+```mermaid
+flowchart LR
+    REQ["Incoming request\n(tokenized)"] --> Q["Waiting queue"]
+    Q --> SCHED["Scheduler\n(admits on free blocks)"]
+    SCHED --> BATCH["Running batch"]
+    BATCH --> DECODE["Decode step\n(1 token + ≤1 block/request)"]
+    DECODE -->|request finishes| FREE["Free blocks\nreturn to shared pool"]
+    FREE --> SCHED
+    DECODE -->|memory pressure| PREEMPT["Preemptive swap\n(blocks → CPU memory)"]
+    PREEMPT -->|resume later| BATCH
+    DECODE -->|still generating| BATCH
+```
 
-**This serving system is also the "inference backend" node in Lesson 3's Concept I3 availability chain.** That Concept's worked example computes combined availability for a gateway → inference backend → vector DB chain in series (≈99.84%, ~14 hours/year downtime), then shows that making just the inference backend redundant — an active-active pool of two independently-available replicas — brings the whole chain's downtime down to ~5.3 hours/year. A pool of PagedAttention-backed replicas like the one described in this step is literally the "inference backend" component that worked example is computing redundancy for.
+**This is the same batch-size/throughput-latency knob Lesson 3's Concept I1 walks through, applied at this paper's benchmark scale.** Lesson 3's I1 table shows batch size trading per-token latency for aggregate throughput at a small illustrative scale (batch 1 → 20 tokens/sec at 50ms/token; batch 32 → 400 tokens/sec at 80ms/token). PagedAttention is what lets that batch size grow large in production, at the scale where GPU *memory* — not compute — is the binding constraint, exactly the regime Step 2's arithmetic puts this system in.
+
+**This serving system is also the "inference backend" node in Lesson 3's Concept I3 availability chain.** That worked example computes combined availability for a gateway → inference backend → vector DB chain in series (≈99.84%, ~14 hours/year downtime), then shows that making just the inference backend redundant — an active-active pool of two independently-available replicas — brings downtime down to ~5.3 hours/year. The PagedAttention-backed replica pool described here is literally that "inference backend" component.
 
 **Trade-offs considered:** Preemptive swap-to-CPU avoids outright rejecting a request during a memory crunch, at the cost of a real resume latency once that request is swapped back in — versus simply queueing or rejecting new requests when the GPU is full, which avoids any swap overhead but makes admission latency worse for anything arriving during a saturated period.
 
@@ -146,7 +181,17 @@ Under memory pressure, the scheduler can use **preemptive scheduling**: temporar
 - **Cost per 1M tokens served** — derived from GPU-hour cost divided by tokens actually served, tracked against the Step 1 cost target.
 - **KV-cache reuse hit rate across turns** — the secondary-sourced technique behind Character.AI's reported ~33x figure; tracked separately from the primary-sourced PagedAttention metrics above precisely because it rests on weaker evidence (per this doc's Confidence note).
 
-**What triggers a change:** KV-cache utilization consistently near 100% *with* a growing queue depth is a real capacity signal — add more replicas, or evaluate a smaller/quantized model (Step 2's trade-off). p99 TTFT breaching its SLA target while utilization is *low* points at a scheduling or preemption misconfiguration, not a capacity problem — adding hardware wouldn't fix it. Cost-per-token creeping upward without a corresponding throughput or latency justification is a signal to re-audit batch-size tuning, or to consider routing a fraction of traffic to a cheaper model tier (the exact decision capstone #15's gateway sits in front of to make).
+**What triggers a change:** each monitored signal points at a different fix — reading it as a capacity problem when it's really a config problem (or vice versa) wastes money or leaves the SLA breached.
+
+```mermaid
+flowchart TD
+    A["Which signal fired?"] --> B{"KV-cache util ~100%\nAND queue depth growing?"}
+    B -->|yes| B1["Real capacity signal:\nadd replicas, or evaluate a\nsmaller/quantized model (Step 2)"]
+    B -->|no| C{"p99 TTFT breaching SLA\nwhile utilization is LOW?"}
+    C -->|yes| C1["Scheduling/preemption\nmisconfiguration —\nmore hardware won't fix it"]
+    C -->|no| D{"Cost per 1M tokens\ncreeping up with no\nthroughput/latency gain?"}
+    D -->|yes| D1["Re-audit batch-size tuning,\nor route a traffic fraction\nto a cheaper model tier\n(capstone #15's gateway)"]
+```
 
 **Trade-offs considered:** Provisioning aggressive headroom (running well below max KV-cache utilization at all times) keeps p99 latency safe against traffic spikes but means paying for GPU capacity that sits idle most of the time. Running close to full utilization is cheaper per token served on average but leaves little margin before queue depth — and therefore p99 latency — starts climbing during any demand spike. Neither is correct in general; it's the same latency-vs-cost trade-off from Step 1, now informed by real monitored numbers instead of an upfront guess.
 
