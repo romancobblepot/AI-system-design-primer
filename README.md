@@ -1,8 +1,8 @@
-# AI System Design Primer
+# 🏗️ AI System Design Primer
 
 I built this as a standalone resource for my own AI system design prep. AI system design borrows most of its hard parts — scaling, caching, databases, queues, availability trade-offs — straight from classic system design, so this repo is deliberately structured like [`system-design-primer`](https://github.com/donnemartin/system-design-primer), and taught the way I learn best: a guided lesson/checkpoint format, same as my [`learn-docker`](https://github.com/romancobblepot/learn-docker) and [`learn-docker-ai-agents`](https://github.com/romancobblepot/learn-docker-ai-agents) repos.
 
-## Why this exists
+## 💡 Why this exists
 
 Most people building AI applications have already picked up the AI-native vocabulary (embeddings, RAG, agent loops, model serving) well enough to get by. What's actually thin for most of us is the *classic* distributed-systems material those applications still run on top of:
 
@@ -14,7 +14,7 @@ Most people building AI applications have already picked up the AI-native vocabu
 
 So this repo starts with a quick AI-native refresher, then spends most of its time on that classic SysDesign material — taught directly, not just linked to, and tied back to a real AI/agentic case study instead of a generic textbook example.
 
-## Lessons & checkpoints
+## 📚 Lessons & checkpoints
 
 Each lesson has a matching checkpoint — a short self-check, not a graded test — meant to be done right after the lesson, before moving on.
 
@@ -32,7 +32,7 @@ Each lesson has a matching checkpoint — a short self-check, not a graded test 
 | 10 | [Production Scaling](lessons/lesson-10-production-scaling.md) | [Checkpoint 10](checkpoints/checkpoint-10-scaling.md) | Taking an AI system from a working prototype to something that holds up at production load |
 | 11 | [Real-World Architectures](lessons/lesson-11-real-world-architectures.md) | [Checkpoint 11](checkpoints/checkpoint-11-real-world-architectures.md) | A survey of how real companies and tools apply everything from Lessons 1–10, with pointers back to exactly which lesson or case study each one maps to |
 
-## Case studies
+## 🧩 Case studies
 
 On top of the 11 lessons, there are **14 worked SysDesign case studies** — full system designs covering constraints, back-of-envelope math, architecture, and explicit trade-offs, with every real-world claim tagged by how confident the sourcing is. Each one pulls together concepts from several lessons at once, the way a real design actually would.
 
@@ -55,14 +55,14 @@ On top of the 11 lessons, there are **14 worked SysDesign case studies** — ful
 
 They're worth doing both as you go — once a case study uses a concept you just learned — and again after Lesson 11, once you have everything to draw on.
 
-## Structure
+## 🗂️ Structure
 
 - **[`lessons/`](lessons/)** — the 11 lessons, numbered in reading order
 - **[`checkpoints/`](checkpoints/)** — one self-check per lesson, same numbering
 - **[`case-studies/`](case-studies/)** — 14 worked system designs, the "put it all together" exercises
 - **[`appendix/`](appendix/)** — flip-back reference material: a [glossary](appendix/glossary.md) of every term used across the course, and a [table of real-world latency/token numbers](appendix/token-and-latency-numbers.md) for sanity-checking estimates
 
-## How to work through it
+## 🧭 How to work through it
 
 This is meant to be read start to finish, in order — later lessons assume you've already read the earlier ones, and the numbering is the reading order:
 
@@ -74,17 +74,17 @@ This is meant to be read start to finish, in order — later lessons assume you'
 
 If you've never touched classic system design before, start with Lesson 2 even though it's a short one — everything after it assumes you have that vocabulary. If you're already comfortable with AI-native concepts, Lesson 1 will mostly be a quick refresher rather than new material.
 
-## How this relates to  other repos
+## 🔗 How this relates to other repos
 
 - [`system-design-primer`](https://github.com/donnemartin/system-design-primer) — the original reference this repo is structured after, and still the better place to go once you want to go deeper than this repo's curated scope (its own exhaustive company-architecture list, SQL-tuning internals, full OSI-layer detail, and many more worked interview questions beyond AI/agentic ones).
 - [`learn-docker`](https://github.com/romancobblepot/learn-docker) — Docker fundamentals, taught around a real todo-app project. No topic overlap, but it's where I first used this lesson/checkpoint teaching format.
 - [`learn-docker-ai-agents`](https://github.com/romancobblepot/learn-docker-ai-agents) — hands-on Docker tooling for AI agents (sandboxing, local model serving, MCP tools, `cagent`): the *tool-specific* companion to this repo's *system design* thinking. Best read side by side, not one instead of the other.
 
-## Still growing
+## 🌱 Still growing
 
 This isn't a finished, one-and-done repo — I keep adding new case studies and sharpening existing lessons as I learn more and run into new real-world examples worth covering. So if something's outdated, a case study you'd love to see is missing, or you just have a correction, contributions are genuinely welcome — open an issue or send a PR.
 
-## Credits
+## 🙌 Credits
 
 This repo stands on the shoulders of people who've put real effort into teaching this stuff well. Big credit to:
 
@@ -96,7 +96,7 @@ This repo stands on the shoulders of people who've put real effort into teaching
 
 Go check out their work — all of it is worth your time.
 
-## Browsing it locally
+## 💻 Browsing it locally
 
 Clone the repo and run the included preview server (no dependencies beyond Python 3):
 
