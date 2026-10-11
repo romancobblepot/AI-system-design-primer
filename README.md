@@ -1,10 +1,18 @@
 # AI System Design Primer
 
-I built this as a standalone resource for my own AI system design prep. But AI system design doesn't exist in a vacuum — it borrows most of its hard parts (scaling, caching, databases, queues, availability trade-offs) straight from classic system design. So rather than reinvent that, this repo is deliberately structured like [`system-design-primer`](https://github.com/donnemartin/system-design-primer) — the well-known reference for that material — and teaches it the way I actually learn best: as a guided lesson/checkpoint course, the same format I used in my [`learn-docker`](https://github.com/romancobblepot/learn-docker) and [`learn-docker-ai-agents`](https://github.com/romancobblepot/learn-docker-ai-agents) courses.
+I built this as a standalone resource for my own AI system design prep. AI system design borrows most of its hard parts — scaling, caching, databases, queues, availability trade-offs — straight from classic system design, so this repo is deliberately structured like [`system-design-primer`](https://github.com/donnemartin/system-design-primer), and taught the way I learn best: a guided lesson/checkpoint format, same as my [`learn-docker`](https://github.com/romancobblepot/learn-docker) and [`learn-docker-ai-agents`](https://github.com/romancobblepot/learn-docker-ai-agents) repos.
 
 ## Why this exists
 
-Most people building AI applications today have already picked up the AI-native vocabulary — embeddings, RAG, agent loops, model serving — well enough to get by. What's actually thin for a lot of us is the *classic* distributed-systems material those applications still run on top of: load balancing, caching, replication, sharding, queues, the CAP trade-offs. This repo starts with a quick AI-native refresher, then spends most of its time on that classic material — taught directly, not just linked to — with every concept immediately tied back to a real AI/agentic case study instead of a generic textbook example.
+Most people building AI applications have already picked up the AI-native vocabulary (embeddings, RAG, agent loops, model serving) well enough to get by. What's actually thin for most of us is the *classic* distributed-systems material those applications still run on top of:
+
+- Load balancing
+- Caching
+- Replication & sharding
+- Queues
+- CAP trade-offs
+
+So this repo starts with a quick AI-native refresher, then spends most of its time on that classic material — taught directly, not just linked to, and tied back to a real AI/agentic case study instead of a generic textbook example.
 
 ## Lessons & checkpoints
 
@@ -26,7 +34,7 @@ Each lesson has a matching checkpoint — a short self-check, not a graded test 
 
 ## Case studies
 
-On top of the 11 lessons, there are **14 worked case studies** — full system designs built the same way a real system design interview answer would be: constraints, back-of-envelope math, architecture, and explicit trade-offs, with every real-world claim tagged by how confident the sourcing is. They aren't tied to a single lesson — each one pulls together concepts from several lessons at once, the way a real design actually would.
+On top of the 11 lessons, there are **14 worked case studies** — full system designs covering constraints, back-of-envelope math, architecture, and explicit trade-offs, with every real-world claim tagged by how confident the sourcing is. Each one pulls together concepts from several lessons at once, the way a real design actually would.
 
 | # | Case study | What it's based on |
 |---|---|---|
@@ -66,15 +74,27 @@ This is meant to be read start to finish, in order — later lessons assume you'
 
 If you've never touched classic system design before, start with Lesson 2 even though it's a short one — everything after it assumes you have that vocabulary. If you're already comfortable with AI-native concepts, Lesson 1 will mostly be a quick refresher rather than new material.
 
-## How this relates to my other courses
+## How this relates to my other repos
 
-- [`learn-docker`](https://github.com/romancobblepot/learn-docker) — Docker fundamentals, taught around a real todo-app project. No overlap in topic, but it's where I first used this lesson/checkpoint teaching format.
-- [`learn-docker-ai-agents`](https://github.com/romancobblepot/learn-docker-ai-agents) — hands-on Docker tooling for AI agents (sandboxing, local model serving, MCP tools, and `cagent`). That repo is the *hands-on, tool-specific* companion to this one: it teaches you to actually run an agent safely on your machine, while this repo teaches the *system design* thinking behind why you'd architect an AI system the way you do. They're meant to be read side by side, not one instead of the other.
-- [`system-design-primer`](https://github.com/donnemartin/system-design-primer) — the original reference this repo is structured after, and still the better place to go once you want to go deeper than this course's curated scope (its own exhaustive company-architecture list, SQL-tuning internals, full OSI-layer detail, and many more worked interview questions beyond AI/agentic ones).
+- [`learn-docker`](https://github.com/romancobblepot/learn-docker) — Docker fundamentals, taught around a real todo-app project. No topic overlap, but it's where I first used this lesson/checkpoint teaching format.
+- [`learn-docker-ai-agents`](https://github.com/romancobblepot/learn-docker-ai-agents) — hands-on Docker tooling for AI agents (sandboxing, local model serving, MCP tools, `cagent`): the *tool-specific* companion to this repo's *system design* thinking. Best read side by side, not one instead of the other.
+- [`system-design-primer`](https://github.com/donnemartin/system-design-primer) — the original reference this repo is structured after, and still the better place to go once you want to go deeper than this repo's curated scope (its own exhaustive company-architecture list, SQL-tuning internals, full OSI-layer detail, and many more worked interview questions beyond AI/agentic ones).
 
 ## Who it's for
 
 Anyone preparing for an AI/ML system design interview, or just trying to build a real mental model of how production AI systems are actually architected — especially if your AI-native vocabulary is already solid but the classic infrastructure side (caching, sharding, queues, availability) feels like a gap.
+
+## Credits
+
+This repo stands on the shoulders of people who've put real effort into teaching this stuff well. Big credit to:
+
+- **[Chip Huyen](https://huyenchip.com/)** — her two books, [*Designing Machine Learning Systems*](https://www.huyenchip.com/books/) and *AI Engineering* ([O'Reilly](https://www.oreilly.com/library/view/ai-engineering/9781098166298/)), are about as good as it gets for actually understanding how production ML/AI systems hold together. If you only read two books on this topic, make them these.
+- **[`system-design-primer`](https://github.com/donnemartin/system-design-primer)** — the GOAT of system design repos, and honestly the whole reason this repo exists in the shape it does. Massive respect for putting together something this thorough and keeping it free and open for everyone.
+- **[Dr. Raj Dandekar, Dr. Rajat Dandekar, Dr. Sreedath Panat, and the rest of the team at Vizuara](https://www.youtube.com/@vizuara)** — MIT-PhD-level rigor on AI/ML fundamentals, explained without the usual jargon wall. A genuinely great resource if you want to go deeper on the ML/DL side.
+- **[Hamel Husain](https://hamel.dev/)** — his blog is close to required reading if you care about LLM evals done properly. Incredibly generous about sharing hard-won, real-world lessons instead of just theory.
+- **[Nitish Singh and CampusX](https://www.youtube.com/@campusx-official)** — one of the best channels out there for building real data science/ML intuition from the ground up, in a way that's actually approachable.
+
+Go check out their work — all of it is worth your time.
 
 ## Browsing it locally
 
