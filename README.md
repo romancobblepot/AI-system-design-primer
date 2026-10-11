@@ -4,7 +4,7 @@ I built this as a standalone resource for my own AI system design prep. AI syste
 
 ## 💡 Why this exists
 
-Most people building AI applications have already picked up the AI-native vocabulary (embeddings, RAG, agent loops, model serving) well enough to get by. What's actually thin for most of us is the *classic* distributed-systems material those applications still run on top of:
+Most people building AI applications have already picked up the AI-native vocabulary (Transformers,embeddings, RAG, agent loops, model serving) well enough to get by. What's actually thin for most of us is the *classic* distributed-systems material those applications still run on top of:
 
 - Load balancing
 - Caching
