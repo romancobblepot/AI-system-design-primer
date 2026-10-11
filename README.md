@@ -80,6 +80,10 @@ If you've never touched classic system design before, start with Lesson 2 even t
 - [`learn-docker`](https://github.com/romancobblepot/learn-docker) — Docker fundamentals, taught around a real todo-app project. No topic overlap, but it's where I first used this lesson/checkpoint teaching format.
 - [`learn-docker-ai-agents`](https://github.com/romancobblepot/learn-docker-ai-agents) — hands-on Docker tooling for AI agents (sandboxing, local model serving, MCP tools, `cagent`): the *tool-specific* companion to this repo's *system design* thinking. Best read side by side, not one instead of the other.
 
+## Still growing
+
+This isn't a finished, one-and-done repo — I keep adding new case studies and sharpening existing lessons as I learn more and run into new real-world examples worth covering. So if something's outdated, a case study you'd love to see is missing, or you just have a correction, contributions are genuinely welcome — open an issue or send a PR.
+
 ## Credits
 
 This repo stands on the shoulders of people who've put real effort into teaching this stuff well. Big credit to:
