@@ -2,7 +2,6 @@
 
 I built this as a standalone resource for my own AI system design prep. But AI system design doesn't exist in a vacuum — it borrows most of its hard parts (scaling, caching, databases, queues, availability trade-offs) straight from classic system design. So rather than reinvent that, this repo is deliberately structured like [`system-design-primer`](https://github.com/donnemartin/system-design-primer) — the well-known reference for that material — and teaches it the way I actually learn best: as a guided lesson/checkpoint course, the same format I used in my [`learn-docker`](https://github.com/romancobblepot/learn-docker) and [`learn-docker-ai-agents`](https://github.com/romancobblepot/learn-docker-ai-agents) courses.
 
-
 ## Why this exists
 
 Most people building AI applications today have already picked up the AI-native vocabulary — embeddings, RAG, agent loops, model serving — well enough to get by. What's actually thin for a lot of us is the *classic* distributed-systems material those applications still run on top of: load balancing, caching, replication, sharding, queues, the CAP trade-offs. This repo starts with a quick AI-native refresher, then spends most of its time on that classic material — taught directly, not just linked to — with every concept immediately tied back to a real AI/agentic case study instead of a generic textbook example.
