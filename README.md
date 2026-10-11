@@ -107,3 +107,5 @@ python3 preview.py
 ```
 
 Then open `http://127.0.0.1:8000`. It lists this repo's folders and files, and renders any `.md` file as formatted markdown in the browser.
+
+Prefer one offline file instead? [`AI-System-Design-Primer.pdf`](AI-System-Design-Primer.pdf) has everything in reading order — each lesson followed by its checkpoint, then all case studies, then the appendix — including every diagram.

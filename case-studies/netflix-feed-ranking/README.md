@@ -155,7 +155,7 @@ where `u` = user (member), `v` = video item (title), `p(v)` = the title's popula
 flowchart LR
     POP["Popularity p(v)\n(hourly/daily/weekly windows,\nregion/similarity segments)"] --> COMB
     RAT["Predicted rating r(u,v)\nSVD/RBM-era signal"] --> COMB
-    MORE["More features\n(\"some help, some don't\")"] --> COMB
+    MORE["More features\n(some help, some don't)"] --> COMB
     COMB["Learning to rank\n(learn w1, w2, ... from\nhistorical positive/negative examples)"] --> FRANK["f_rank(u,v) = w1*p(v) + w2*r(u,v) + b"]
     FRANK --> SORTSTEP["Sort titles by score\n(per-member, per-row)"]
 ```
@@ -225,7 +225,7 @@ This four-step shape is this document's own construction; only the overall "scor
 
 ```mermaid
 flowchart LR
-    C["Candidate set\ne.g. \"Dramas\" row"] --> S["Scoring\nf_rank(u,v) = w1*p(v) + w2*r(u,v) + b"]
+    C["Candidate set\ne.g. 'Dramas' row"] --> S["Scoring\nf_rank(u,v) = w1*p(v) + w2*r(u,v) + b"]
     S --> SO["Sorting\ndescending score"]
     SO --> F["Filtering\nwatched / queued / parental-control"]
     F --> OUT["Final ordered row"]
