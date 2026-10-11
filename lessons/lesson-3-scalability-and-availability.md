@@ -10,7 +10,7 @@ By the end of this lesson, you will:
 - Distinguish performance from scalability and latency from throughput, and explain why those differ for an LLM-serving app vs. a typical CRUD app
 - Understand the CAP theorem and name a system as weakly, eventually, or strongly consistent, with a concrete example of what each means for a write-then-read sequence
 - Compute combined availability for a multi-component serving chain, in series and with parallel redundancy, and explain what active-passive and active-active failover each actually buy you
-- Point to exactly where capstone #10 (`solutions/llm-inference-serving`) and capstone #15 (`solutions/llm-api-gateway`) each exercise these ideas, and where Lesson 1's retrieval/memory concepts tie into CAP theorem
+- Point to exactly where capstone #10 (`case-studies/llm-inference-serving`) and capstone #15 (`case-studies/llm-api-gateway`) each exercise these ideas, and where Lesson 1's retrieval/memory concepts tie into CAP theorem
 
 ---
 
@@ -50,7 +50,7 @@ Going from batch size 1 to 32 increases per-token latency by 60% (50ms → 80ms)
 
 **Trade-offs considered:** Larger batch sizes raise aggregate throughput but raise every request's latency, and push GPU memory pressure up (more concurrent KV caches resident at once) — there's no batch size that's simply "better," only one that matches a given product's actual latency SLA (service-level agreement — a committed maximum response time) and GPU budget.
 
-**Case-study pointer:** capstone #10 (`solutions/llm-inference-serving`) is built directly around this trade-off — the vLLM/PagedAttention paper and Character.AI's reported ~33x serving-cost reduction both hinge on managing the KV cache (the same per-request memory this Concept's batch-size table trades against), not raw FLOPs. This Concept's batch-size/throughput table is the exact mechanism capstone #10's Step 5 (serving architecture) has to tune.
+**Case-study pointer:** capstone #10 (`case-studies/llm-inference-serving`) is built directly around this trade-off — the vLLM/PagedAttention paper and Character.AI's reported ~33x serving-cost reduction both hinge on managing the KV cache (the same per-request memory this Concept's batch-size table trades against), not raw FLOPs. This Concept's batch-size/throughput table is the exact mechanism capstone #10's Step 5 (serving architecture) has to tune.
 
 **Source(s) and further reading:**
 
@@ -97,7 +97,7 @@ The strong-consistency write took until t = 120ms to be considered complete (the
 
 **Trade-offs considered:** Strong consistency removes the "did I just get stale data" question but adds real latency to every write (and sometimes to reads too, if reads also require a quorum) — eventual consistency is faster and simpler to scale but pushes the "is this fresh enough" question onto the application. Neither is strictly correct; a vector database backing a RAG system updated nightly can tolerate eventual consistency easily (nobody notices a few hundred milliseconds of staleness), while a system where an agent writes a fact and immediately needs to read it back in the same turn cannot.
 
-**Case-study / cross-lesson pointer:** This trade-off resurfaces in two places from Lesson 1: Concept C2 (vector databases), where most production vector databases default to eventual consistency between replicas for write throughput, and Concept E2 (long-term memory), where an agent that writes a memory and reads it back moments later — within the same multi-step run — can be silently bitten by this gap if its memory store is only eventually consistent, appearing to "forget" something it just stored. capstone #12 (`solutions/multi-agent-customer-support`) Step 3 applies this exact choice to its per-customer context store: a specialist agent that just processed a refund needs the *very next* turn in that conversation to read back a state that already reflects it, so that store needs strong consistency for at least the fields a just-completed action touches (e.g. `last_updated_at`, `recent_orders[].last_action`), even while the rest of the store tolerates eventual consistency — the same "write it, read it back moments later" failure shape as the E2 cross-reference above, now with concrete field names behind it.
+**Case-study / cross-lesson pointer:** This trade-off resurfaces in two places from Lesson 1: Concept C2 (vector databases), where most production vector databases default to eventual consistency between replicas for write throughput, and Concept E2 (long-term memory), where an agent that writes a memory and reads it back moments later — within the same multi-step run — can be silently bitten by this gap if its memory store is only eventually consistent, appearing to "forget" something it just stored. capstone #12 (`case-studies/multi-agent-customer-support`) Step 3 applies this exact choice to its per-customer context store: a specialist agent that just processed a refund needs the *very next* turn in that conversation to read back a state that already reflects it, so that store needs strong consistency for at least the fields a just-completed action touches (e.g. `last_updated_at`, `recent_orders[].last_action`), even while the rest of the store tolerates eventual consistency — the same "write it, read it back moments later" failure shape as the E2 cross-reference above, now with concrete field names behind it.
 
 **Source(s) and further reading:**
 
@@ -189,7 +189,7 @@ print(f"Backend redundant: {with_redundancy:.6%}")  # 99.939905%
 
 **Trade-offs considered:** Active-passive is cheaper to run (the standby isn't doing real work, so it can often be a smaller/cheaper instance) but has a real failover delay during which requests fail outright — unacceptable for a latency-sensitive gateway. Active-active eliminates that delay but costs roughly double the running infrastructure for the redundant component, and requires a load balancer (Lesson 4) in front of it to distribute traffic — and if the redundant replicas also hold state (not just stateless compute), it reintroduces Concept 2's consistency question: now you have to decide how those replicas stay in sync.
 
-**Case-study pointer:** capstone #15 (`solutions/llm-api-gateway`) is built specifically around multi-region model-serving failover — its Step 5 (serving architecture) has to decide which pattern above to apply to its inference-backend pool, and the series-vs-parallel arithmetic above is the exact tool for justifying that decision with numbers instead of intuition.
+**Case-study pointer:** capstone #15 (`case-studies/llm-api-gateway`) is built specifically around multi-region model-serving failover — its Step 5 (serving architecture) has to decide which pattern above to apply to its inference-backend pool, and the series-vs-parallel arithmetic above is the exact tool for justifying that decision with numbers instead of intuition.
 
 **Source(s) and further reading:**
 

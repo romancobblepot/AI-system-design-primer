@@ -8,7 +8,7 @@ This file is the blueprint. Nothing below is written yet — this is what gets b
 
 ## 1. What's being merged, and why neither source works alone
 
-**`system-design-primer` gives us:** an exhaustive, cross-referenced index of system design topics (consistency, availability, caching, databases, queues, communication protocols...), each explained with trade-offs rather than a single "right answer," plus a `solutions/` folder of fully worked interview questions (Pastebin, Twitter, a web crawler...) that each follow the same four-step method: outline use cases/constraints → high-level design → core components → scale the design, with real back-of-the-envelope math, table schemas, REST payloads, and Python sketches.
+**`system-design-primer` gives us:** an exhaustive, cross-referenced index of system design topics (consistency, availability, caching, databases, queues, communication protocols...), each explained with trade-offs rather than a single "right answer," plus a `case-studies/` folder of fully worked interview questions (Pastebin, Twitter, a web crawler...) that each follow the same four-step method: outline use cases/constraints → high-level design → core components → scale the design, with real back-of-the-envelope math, table schemas, REST payloads, and Python sketches.
 
 **What it's missing for our purpose:** it's a *reference you read*, not a *course you do*. There's no learning-objectives framing, no "run this yourself" verification loop, and nothing AI/agent-specific — no LLM serving, no RAG, no tool-calling, no agent memory, no prompt injection.
 
@@ -16,7 +16,7 @@ This file is the blueprint. Nothing below is written yet — this is what gets b
 
 **What it's missing for our purpose:** it only covers four Docker-specific tools end to end (`sbx`, `docker model`, `docker mcp`, `docker agent`) — it has no mechanism for covering a *broad topic index* the way `system-design-primer` does, and no equivalent of the worked interview-question solutions.
 
-**The merge:** use `system-design-primer`'s topic index and worked-solution *content* as the raw material, and pour it through `learn-docker-ai-agents`'s Why/What/How lesson structure and checkpoint-gated pacing. The worked interview questions become a `solutions/` folder that keeps `system-design-primer`'s four-step method but is reframed for AI/agentic systems (e.g. "Design a RAG customer-support chatbot" instead of "Design Pastebin").
+**The merge:** use `system-design-primer`'s topic index and worked-solution *content* as the raw material, and pour it through `learn-docker-ai-agents`'s Why/What/How lesson structure and checkpoint-gated pacing. The worked interview questions become a `case-studies/` folder that keeps `system-design-primer`'s four-step method but is reframed for AI/agentic systems (e.g. "Design a RAG customer-support chatbot" instead of "Design Pastebin").
 
 **Revised assumption — this repo now teaches core system design directly, not just links to it.** The first pass treated `system-design-primer` as an external prerequisite and scoped this repo to AI-native topics only. That got inverted after further review: most people building AI applications have already internalized the AI-native material (RAG, agent loops, embeddings, model serving) well enough — what's actually thin is the classic distributed-systems material those applications still run on top of (load balancing, caching, replication, sharding, queues, CAP trade-offs). So Lessons 3–7 (§3) now *teach that core material directly*, curated down to what an AI engineer specifically needs and immediately overlaid onto the real case studies in §6.2 — a curated, case-study-anchored subset of `system-design-primer`'s index, not a copy of it. `system-design-primer` remains the reference for going deeper than that curated subset (its own exhaustive company-architecture list, SQL-tuning internals, full OSI-layer detail) — see §6.3's Step 0 for exactly where that line is drawn. The old AI-native Groups A–E get compressed into one refresher lesson instead of six full ones (§3, §4); Lessons 8–10 are untouched by this revision.
 
@@ -45,7 +45,7 @@ ai-system-design-primer/
 │   ├── checkpoint-3-scalability-and-availability.md
 │   ├── ...                            # checkpoint-N pairs 1:1 with lesson-N
 │   └── checkpoint-11-real-world-architectures.md  # open-ended self-check, not fixed Q&A — see §5 exception
-├── solutions/                         # mirrors system-design-primer's solutions/system_design/
+├── case-studies/                       # mirrors system-design-primer's solutions/system_design/; renamed from solutions/ post-launch for an architecture/design-flavored name
 │   ├── rag-contextual-retrieval/README.md
 │   ├── autonomous-coding-agent/README.md
 │   └── ...                            # one per §6.2 catalog entry
@@ -57,7 +57,7 @@ ai-system-design-primer/
 Four top-level pieces, same division of labor as the two source repos:
 - **`lessons/`** = teach one topic area deeply, Why/What/How, hands-on where a real tool exists.
 - **`checkpoints/`** = gate progression; force active recall before the next lesson.
-- **`solutions/`** = `system-design-primer`'s interview-question method, applied to AI/agentic system prompts, as the capstone-style synthesis exercises.
+- **`case-studies/`** = `system-design-primer`'s interview-question method, applied to AI/agentic system prompts, as the capstone-style synthesis exercises.
 - **`appendix/`** = the reference material that doesn't belong inside a single lesson (numbers to memorize, further reading, glossary).
 
 ---
@@ -158,7 +158,7 @@ Four top-level pieces, same division of labor as the two source repos:
 The AI-world analog of `system-design-primer`'s own "Real world architectures," "Company architectures," and "Company engineering blogs" sections — proof that the patterns taught in Lessons 1–10 actually show up in production, beyond just the 14 capstones that got full treatment in §6.2.
 
 - N1. **AI infrastructure building blocks** — the analog of `system-design-primer`'s MapReduce/Bigtable/GFS/Chubby/Kafka/Zookeeper table. Link + one-liner each, no worked solution: model-serving engines (vLLM, Triton, TensorRT-LLM, Ray Serve), vector/retrieval infra (Pinecone, Weaviate, Milvus, FAISS, pgvector), agent/workflow orchestration (LangGraph, Temporal), ML-ops infra (MLflow, Feast, Kubeflow), LLM observability/eval infra (LangSmith, Weights & Biases, Arize). Each row names which Lesson it reinforces (e.g. vLLM → Lesson 1's B1/B4 and capstone #10).
-- N2. **Company AI architectures** — the analog of `system-design-primer`'s "Company architectures" table. Companies with a documented AI/agent architecture that *didn't* earn a full `solutions/` capstone (§6.2 already covers Pinterest, YouTube, Airbnb, LinkedIn, Uber, Netflix, Anthropic, Character.AI, Cognition): Perplexity's answer engine, GitHub Copilot, Replit Agent, Notion AI, Midjourney's diffusion serving, Shopify Sidekick, Duolingo Max, Discord's Clyde, Spotify's AI DJ, Stripe Radar. One row each — company | what they built | real reference link | one-line takeaway — same primary/secondary sourcing discipline as §6.2.
+- N2. **Company AI architectures** — the analog of `system-design-primer`'s "Company architectures" table. Companies with a documented AI/agent architecture that *didn't* earn a full `case-studies/` capstone (§6.2 already covers Pinterest, YouTube, Airbnb, LinkedIn, Uber, Netflix, Anthropic, Character.AI, Cognition): Perplexity's answer engine, GitHub Copilot, Replit Agent, Notion AI, Midjourney's diffusion serving, Shopify Sidekick, Duolingo Max, Discord's Clyde, Spotify's AI DJ, Stripe Radar. One row each — company | what they built | real reference link | one-line takeaway — same primary/secondary sourcing discipline as §6.2.
 - N3. **Company engineering blogs** — the AI-specific subset of `system-design-primer`'s own blog list: OpenAI, Anthropic, Google DeepMind, Meta AI, Hugging Face, LangChain, Pinecone, Weights & Biases — plus the AI/ML teams inside companies already in the classic list (Netflix Tech Blog, Uber Engineering, Airbnb Engineering, Pinterest Engineering, LinkedIn Engineering), since several §6.2 Track 1 sources came from exactly those teams.
 - N4. **How to read N1–N3** — the instruction `system-design-primer` gives, carried over directly: don't focus on nitty-gritty implementation details. Instead, identify shared principles and recurring technologies across entries, note what problem each one solves and where that approach breaks down, and note which Lesson (1–9) or §6.2 capstone each entry's core trick actually maps back to. An entry that doesn't connect back to something already taught is a dangling fact, not reinforcement — this Concept is Lesson 11's own depth-bar substitute (see §4/§7 exceptions).
 
@@ -209,7 +209,7 @@ Lesson 2 follows the exact same shape, one layer down the stack: it compresses G
 
 Lesson 11 is a **survey lesson**, not a teaching lesson: its Concepts (N1–N3, §3) are link-and-one-liner tables, not Why/What/How explanations — the thing being taught is already covered elsewhere (Lessons 1–10, §6.2's capstones); Lesson 11's job is pointing at *more* real examples of it. Its Hands-On Walkthrough is replaced by N4's reading instruction, and its depth-bar substitute is "every table row names which Lesson/capstone it reinforces" rather than a numeric calculation.
 
-Only Lessons 3–10 and the `solutions/` capstones are held to the full depth bar in §7.
+Only Lessons 3–10 and the `case-studies/` capstones are held to the full depth bar in §7.
 
 ---
 
@@ -241,13 +241,13 @@ Move to **Lesson N+1: ...**
 
 ---
 
-## 6. `solutions/` — the interview-style capstones, grounded in real case studies
+## 6. `case-studies/` — the interview-style capstones, grounded in real case studies
 
 This is the section that got revised after review. The requirement: don't invent generic prompts — root every capstone in a design that's **actually documented** (a named company engineering blog/paper, or a chapter in a recognized ML/AI system-design interview resource), so working through it teaches the real trade-offs someone already had to make, not trade-offs I made up. Every entry below was checked against a real source; where the primary source is thin, that's called out explicitly rather than papered over.
 
 ### 6.1 Methodology — a 6-step method, not `system-design-primer`'s 4
 
-`system-design-primer`'s four steps (use cases/constraints → high-level design → core components → scale) are built for *infrastructure* systems, where the hard part is almost entirely the architecture diagram. AI/ML systems have an extra, prior problem that classic system design doesn't: **translating a business goal into a measurable model/agent objective** — this is the actual spine of the "Machine Learning System Design Interview" canon (Aminian & Xu / ByteByteGo) and of Educative's "Grokking the Machine Learning Interview," and it's the step most people skip straight past, which is exactly what makes answers sound like a checklist instead of like a designer. Every `solutions/` entry follows this 6-step method instead:
+`system-design-primer`'s four steps (use cases/constraints → high-level design → core components → scale) are built for *infrastructure* systems, where the hard part is almost entirely the architecture diagram. AI/ML systems have an extra, prior problem that classic system design doesn't: **translating a business goal into a measurable model/agent objective** — this is the actual spine of the "Machine Learning System Design Interview" canon (Aminian & Xu / ByteByteGo) and of Educative's "Grokking the Machine Learning Interview," and it's the step most people skip straight past, which is exactly what makes answers sound like a checklist instead of like a designer. Every `case-studies/` entry follows this 6-step method instead:
 
 1. **Clarify requirements & frame the ML/AI objective** — functional scope, non-functional constraints (latency SLA, scale), and critically: what's the actual metric being optimized (CTR, precision@k, MAE, win-rate vs. a baseline), what counts as ground truth/feedback signal, and what's explicitly out of scope. This step is where most of the "thinking like a designer" actually happens — get the objective wrong and every downstream choice is wrong for a reason that looks like an infra mistake but isn't one.
 2. **Back-of-envelope constraints** — the `system-design-primer`-style numeric estimate (QPS, data volume, tokens/sec, $/month), now carried through to Step 4's trade-offs.
@@ -256,7 +256,7 @@ This is the section that got revised after review. The requirement: don't invent
 5. **Serving architecture** — the `system-design-primer`-style infra diagram: APIs, caching, gateway/routing, sandboxing, scaling. This is where most of the direct overlap with the rest of the repo's `lessons/` content gets exercised.
 6. **Evaluation, monitoring, and iteration** — offline eval before shipping, online metrics after shipping, the feedback loop back into Step 3's data, and the failure modes that show up only at scale.
 
-Every `solutions/<slug>/README.md` is structured around these six numbered steps, each one ending with an explicit **Trade-offs considered** callout — a short list of the alternative choices at that step and why they were rejected or deferred, which is the part of "thinking like a designer" that a pure architecture diagram never shows.
+Every `case-studies/<slug>/README.md` is structured around these six numbered steps, each one ending with an explicit **Trade-offs considered** callout — a short list of the alternative choices at that step and why they were rejected or deferred, which is the part of "thinking like a designer" that a pure architecture diagram never shows.
 
 ### 6.2 Catalog — grounded case studies, by track
 
@@ -284,7 +284,7 @@ Every `solutions/<slug>/README.md` is structured around these six numbered steps
 13. **Autonomous coding agent** — the "build something like Devin/Claude Code/Cursor" question. Source: Cognition Labs, *"Introducing Devin,"* March 2024 — sandboxed shell/editor/browser access, a plan-then-execute loop, continuous progress reporting, benchmarked on SWE-bench (Cognition's own reported 13.86% resolve rate vs. a prior 1.96% baseline — their own benchmark claim, stated as such). **Teaches:** giving an agent its own full dev environment (not just one tool at a time) is what turns single tool-calls into multi-hour autonomous task completion — and why that raises the sandboxing stakes from Group F of this same repo.
 14. **Computer-use / browser agent** — an agent that operates a GUI directly (mouse/keyboard/screenshots) instead of through APIs. Source: Anthropic's "computer use" capability announcement (Claude 3.5 Sonnet, Oct. 2024). **Teaches:** the design cost of a screenshot-reasoning-action loop (latency per step, action-grounding errors) vs. a direct-API agent — a trade-off this repo's Group D (agent control-flow patterns) should make explicit.
 
-Each gets its own `solutions/<slug>/README.md`, structured around the six steps in §6.1; large/complex ones (visual search, RAG, multi-agent platforms) may also get a diagram image and/or a `*_snippets.py`, mirroring `system-design-primer`'s per-solution file layout. Every entry's README opens with a **Source(s)** line naming the real reference(s) above — and an explicit **Confidence** note (primary source vs. secondary/third-party coverage) wherever that distinction matters, per the Sierra/Klarna and Character.AI entries above.
+Each gets its own `case-studies/<slug>/README.md`, structured around the six steps in §6.1; large/complex ones (visual search, RAG, multi-agent platforms) may also get a diagram image and/or a `*_snippets.py`, mirroring `system-design-primer`'s per-solution file layout. Every entry's README opens with a **Source(s)** line naming the real reference(s) above — and an explicit **Confidence** note (primary source vs. secondary/third-party coverage) wherever that distinction matters, per the Sierra/Klarna and Character.AI entries above.
 
 ### 6.3 When a solution touches a concept with no lesson yet
 
@@ -292,10 +292,10 @@ The catalog in §6.2 is sourced from real case studies, which means it will keep
 
 **But most of what Track 1's capstones need isn't AI-native at all — it's the classic infra stack.** Visual search needs a sharded index and a feature store; ad-click prediction and feed ranking need caching tiers, DB read replicas, and a batch/online split; every Track 1 capstone's Step 5 (serving architecture, §6.1) leans on load balancers, horizontal scaling, master-slave replication, message queues. After the revision in §1, that's no longer content this repo defers out for — Lessons 3–7 teach exactly this, directly, as the repo's primary new material. So the rule has a mandatory check *before* either of the two options below ever fires:
 
-0. **Check Lessons 3–7 first, then `system-design-primer`.** If the concept is core system design now taught directly in this repo — scalability/availability patterns → Lesson 3, DNS/CDN/load-balancing → Lesson 4, databases/caching → Lesson 5, queues/communication → Lesson 6, app architecture/security → Lesson 7 — link to that lesson's Concept. Don't write a Sidebar and don't promote a new lesson for something already taught here. Only if the concept is classic infra *beyond* what Lessons 3–7 curate down to (e.g. B-tree index internals, a specific SQL query-cache tuning flag, a full OSI-layer breakdown) does it defer out to `system-design-primer` as the deeper reference — exactly how that repo's own `solutions/` folder links back to its own README rather than re-explaining a concept inline. Only concepts genuinely AI/agent-native, with no home in Lessons 1–7 either, proceed to steps 1–3.
+0. **Check Lessons 3–7 first, then `system-design-primer`.** If the concept is core system design now taught directly in this repo — scalability/availability patterns → Lesson 3, DNS/CDN/load-balancing → Lesson 4, databases/caching → Lesson 5, queues/communication → Lesson 6, app architecture/security → Lesson 7 — link to that lesson's Concept. Don't write a Sidebar and don't promote a new lesson for something already taught here. Only if the concept is classic infra *beyond* what Lessons 3–7 curate down to (e.g. B-tree index internals, a specific SQL query-cache tuning flag, a full OSI-layer breakdown) does it defer out to `system-design-primer` as the deeper reference — exactly how that repo's own `case-studies/` folder links back to its own README rather than re-explaining a concept inline. Only concepts genuinely AI/agent-native, with no home in Lessons 1–7 either, proceed to steps 1–3.
 
 1. **First appearance → inline Sidebar.** The solution doc explains it on the spot with a compact Sidebar block — same shape as a lesson Concept (Why?/What?/How?), same full-definition-on-first-use bar from §7 — directly inside whichever of the six steps (§6.1) it comes up in. It also gets a one-line entry added to `appendix/glossary.md` immediately, even if nothing else changes that day.
-2. **Second appearance, anywhere → promotion candidate.** If a second `solutions/` entry (or a later-written lesson) needs the same concept, it's no longer "case-study-specific" — it gets promoted into a real lesson with a checkpoint, slotted into whichever existing Group A–H it fits (or, rarely, justifying a new Group if it fits none — that's itself a sign the §3 taxonomy was incomplete and should be revised, not worked around). The first solution's Sidebar is then rewritten as a link to the new lesson, exactly like D4/D6/F2/B2 already link out to `learn-docker-ai-agents` instead of re-teaching sandboxing or model-serving.
+2. **Second appearance, anywhere → promotion candidate.** If a second `case-studies/` entry (or a later-written lesson) needs the same concept, it's no longer "case-study-specific" — it gets promoted into a real lesson with a checkpoint, slotted into whichever existing Group A–H it fits (or, rarely, justifying a new Group if it fits none — that's itself a sign the §3 taxonomy was incomplete and should be revised, not worked around). The first solution's Sidebar is then rewritten as a link to the new lesson, exactly like D4/D6/F2/B2 already link out to `learn-docker-ai-agents` instead of re-teaching sandboxing or model-serving.
 3. **Never promoted = fine.** A concept that only one case study ever needs (e.g. the specific detail of how Uber's routing engine computes segment-wise traversal time) stays a Sidebar forever. Not everything needs to become a lesson — only what turns out to be reused.
 4. **Build-order consequence:** each phase in §8 ends with a **concept harvest** pass — scan every Sidebar written so far for second-appearances, and write any newly-triggered lessons before starting the next phase, rather than batching that discovery to the very end. This keeps the taxonomy honest and growing from real usage instead of being frozen as of this plan's first draft.
 
@@ -309,7 +309,7 @@ A lesson or solution doc is **not done** until it has, at minimum:
 - Explicit trade-offs stated as trade-offs ("X is good for ___, bad for ___"), never a single "correct" answer presented as the only option
 - Every new term defined in full on first use (per [[feedback-tutorial-depth]])
 - A "Source(s) and further reading" list, matching `system-design-primer`'s convention on every topic section
-- For every `solutions/` entry specifically: the named real-world source(s) from §6.2, each tagged **primary** (a named company's own engineering blog/paper) or **secondary** (third-party coverage only) — never presented as more authoritative than it is
+- For every `case-studies/` entry specifically: the named real-world source(s) from §6.2, each tagged **primary** (a named company's own engineering blog/paper) or **secondary** (third-party coverage only) — never presented as more authoritative than it is
 - For every Concept in Lessons 3–7 specifically: an explicit pointer to which §6.2 case study exercises it (per §3's non-negotiable addition) — a core-system-design lesson with no case-study pointer isn't done
 
 ---
@@ -322,29 +322,29 @@ A lesson or solution doc is **not done** until it has, at minimum:
 **Phase 2 — Core system design, part 1: the resource/availability layer.**
 - Lesson 3 (scalability & availability) + Checkpoint 3
 - Lesson 4 (network & delivery) + Checkpoint 4
-- First case-study overlay pass: write `solutions/llm-api-gateway` (capstone #15) and `solutions/llm-inference-serving` (capstone #10) far enough to confirm Lessons 3–4's Concepts actually produce useful case-study pointers (§7's new requirement) before writing the remaining three core lessons
+- First case-study overlay pass: write `case-studies/llm-api-gateway` (capstone #15) and `case-studies/llm-inference-serving` (capstone #10) far enough to confirm Lessons 3–4's Concepts actually produce useful case-study pointers (§7's new requirement) before writing the remaining three core lessons
 
 **Phase 3 — Core system design, part 2: the data/communication layer.**
 - Lesson 5 (data layer) + Checkpoint 5
 - Lesson 6 (async & communication) + Checkpoint 6
 - Lesson 7 (application architecture & security) + Checkpoint 7
-- Overlay pass against `solutions/visual-search` (capstone #1), `solutions/rag-contextual-retrieval` (capstone #9), `solutions/autonomous-coding-agent` (capstone #13, Devin-style)
+- Overlay pass against `case-studies/visual-search` (capstone #1), `case-studies/rag-contextual-retrieval` (capstone #9), `case-studies/autonomous-coding-agent` (capstone #13, Devin-style)
 
 **Phase 4 — Lessons 8–10, unchanged scope.**
 - Lesson 8 (safety/isolation) + Checkpoint 8 — F2 Concept still cross-links to `learn-docker-ai-agents` Lesson 1
 - Lesson 9 (evaluation/observability) + Checkpoint 9
 - Lesson 10 (production/scaling) + Checkpoint 10
 
-**Phase 5 — Remaining `solutions/*` catalog entries.**
+**Phase 5 — Remaining `case-studies/*` catalog entries.**
 - Fill out the rest of §6.2's 14 capstones (Track 1's classic-ML entries #3–4, #6–8; Track 2/3's remaining entries #5/#11, #12, #14)
 
 **Phase 6 — Lesson 11 + Checkpoint 11, last, on purpose.**
 - Lesson 11's whole point is pointing back at Lessons 1–10 and the §6.2 capstones (N4's reading instruction), so it's written last, once there's something real to point back *to* — writing it earlier would mean guessing at cross-references that don't exist yet
 - Appendix (token/latency numbers, glossary) finalized alongside it, pulling figures and terms from all 10 lessons that existed at the time
 
-**Phase 7 — Depth-bar pass.** Re-check every lesson and solution against §7, including the case-study-pointer requirement for Lessons 3–7, the primary/secondary sourcing tags for every `solutions/` entry, and that every Lesson 11 table row actually names a Lesson/capstone per N4.
+**Phase 7 — Depth-bar pass.** Re-check every lesson and solution against §7, including the case-study-pointer requirement for Lessons 3–7, the primary/secondary sourcing tags for every `case-studies/` entry, and that every Lesson 11 table row actually names a Lesson/capstone per N4.
 
-**Phase 8 — Post-build revision: insert Lesson 2 (added after Phases 1–7 were already complete).** Review of the finished repo found that Lessons 3–7 assumed a baseline of classic distributed-systems vocabulary (client/server, request/response, API, database, cache, latency/throughput) that not every reader has — the same gap Lesson 1 already addresses one layer up, for AI-native vocabulary. Rather than have Lessons 3–7 stop and re-explain this inline, a new Lesson 2 (Group P, §3) was inserted to compress it into one refresher, mirroring Lesson 1's own template exception. This meant: writing Lesson 2 + Checkpoint 2 through the same Writer → Reviewer → Rewriter pipeline as every other lesson; renumbering every lesson and checkpoint file from 2–10 up to 3–11; and updating every cross-reference across `plan.md`, `PROGRESS.md`, all lessons/checkpoints, and all `solutions/` capstones to match. Every lesson/checkpoint total mentioned anywhere in this plan (e.g. "10 lessons total," "all 10 lessons") now reads as 11 to reflect this.
+**Phase 8 — Post-build revision: insert Lesson 2 (added after Phases 1–7 were already complete).** Review of the finished repo found that Lessons 3–7 assumed a baseline of classic distributed-systems vocabulary (client/server, request/response, API, database, cache, latency/throughput) that not every reader has — the same gap Lesson 1 already addresses one layer up, for AI-native vocabulary. Rather than have Lessons 3–7 stop and re-explain this inline, a new Lesson 2 (Group P, §3) was inserted to compress it into one refresher, mirroring Lesson 1's own template exception. This meant: writing Lesson 2 + Checkpoint 2 through the same Writer → Reviewer → Rewriter pipeline as every other lesson; renumbering every lesson and checkpoint file from 2–10 up to 3–11; and updating every cross-reference across `plan.md`, `PROGRESS.md`, all lessons/checkpoints, and all `case-studies/` capstones to match. Every lesson/checkpoint total mentioned anywhere in this plan (e.g. "10 lessons total," "all 10 lessons") now reads as 11 to reflect this.
 
 ---
 

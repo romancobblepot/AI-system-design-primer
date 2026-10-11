@@ -51,7 +51,7 @@ An AI-serving system still runs on top of all of this — a back-of-envelope est
 
 ## 3. $/1M-token pricing by provider tier
 
-**The illustrative anchor this repo actually computes with.** Lesson 7's Concept 4 and capstone #13 (`solutions/autonomous-coding-agent`) both deliberately reuse the *same* illustrative rate for every back-of-envelope cost calculation in this repo — **$3/1M input tokens, $15/1M output tokens** — explicitly stated in both places as "not any single named provider's current, literal rate," chosen for consistency across this repo's own worked examples, not as a claim about real market pricing. **(this repo: Lesson 7, Concept 4 / capstone #13, Step 2)**. Don't confuse this anchor with the real provider tiers below — they're kept deliberately separate throughout this repo, and this appendix keeps that separation too.
+**The illustrative anchor this repo actually computes with.** Lesson 7's Concept 4 and capstone #13 (`case-studies/autonomous-coding-agent`) both deliberately reuse the *same* illustrative rate for every back-of-envelope cost calculation in this repo — **$3/1M input tokens, $15/1M output tokens** — explicitly stated in both places as "not any single named provider's current, literal rate," chosen for consistency across this repo's own worked examples, not as a claim about real market pricing. **(this repo: Lesson 7, Concept 4 / capstone #13, Step 2)**. Don't confuse this anchor with the real provider tiers below — they're kept deliberately separate throughout this repo, and this appendix keeps that separation too.
 
 **Real provider pricing** (verified by directly fetching each provider's own current pricing page on 2026-10-11 — these are official first-party sources, not aggregators, but see the note below on how fast they're already churning):
 
@@ -108,11 +108,11 @@ An AI-serving system still runs on top of all of this — a back-of-envelope est
 
 | Metric | Target | Provenance |
 |---|---|---|
-| p50 time-to-first-token (TTFT) | < 200 ms | (this repo: capstone #10, `solutions/llm-inference-serving`, Step 1) |
+| p50 time-to-first-token (TTFT) | < 200 ms | (this repo: capstone #10, `case-studies/llm-inference-serving`, Step 1) |
 | p99 TTFT | < 1.5 s | (this repo: capstone #10, Step 1) |
 | p50 inter-token latency | < 40 ms/token | (this repo: capstone #10, Step 1) |
 | p99 inter-token latency | < 120 ms/token | (this repo: capstone #10, Step 1) |
-| LLM gateway's own added-latency budget, on top of the above | < 20 ms | (this repo: capstone #15, `solutions/llm-api-gateway`, Step 1) |
+| LLM gateway's own added-latency budget, on top of the above | < 20 ms | (this repo: capstone #15, `case-studies/llm-api-gateway`, Step 1) |
 | Tokenizing a ~2,000-token request (BPE) | ~1–2 ms | (this repo: capstone #15, Step 2) |
 | Illustrative batch-size/throughput trade-off: batch 1 | 50 ms/token → 20 tokens/sec aggregate | (this repo: Lesson 3, Concept 1 — explicitly an illustrative, not production-measured, table) |
 | Illustrative batch-size/throughput trade-off: batch 32 | 80 ms/token → 400 tokens/sec aggregate | (this repo: Lesson 3, Concept 1) |

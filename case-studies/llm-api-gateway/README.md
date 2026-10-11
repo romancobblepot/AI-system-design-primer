@@ -4,7 +4,7 @@
 
 **Confidence:** No single company has published a primary engineering teardown of this specific pattern — unlike, say, the vLLM paper behind capstone #10, there is no named team's own "how we built our LLM gateway" paper or blog post this capstone can point to as ground truth. This document instead synthesizes real, verifiable, publicly available product documentation from three actual products that implement this pattern in production. Treat every design choice below as "this is how real shipped products do it," not "this is how [Company X] does it" — there is no single company to attribute it to.
 
-**Scope note:** This capstone is the routing/gateway layer only — it sits *in front of* one or more model-serving backends (like capstone #10's `solutions/llm-inference-serving`) and decides which backend/provider handles a given request. It does not cover the inference serving itself, nor content moderation (Lesson 8 / capstone #11's territory).
+**Scope note:** This capstone is the routing/gateway layer only — it sits *in front of* one or more model-serving backends (like capstone #10's `case-studies/llm-inference-serving`) and decides which backend/provider handles a given request. It does not cover the inference serving itself, nor content moderation (Lesson 8 / capstone #11's territory).
 
 ---
 

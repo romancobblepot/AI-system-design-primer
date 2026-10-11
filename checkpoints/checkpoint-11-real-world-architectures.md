@@ -15,7 +15,7 @@ The three worked examples below show what that one sentence should look like —
 <details>
 <summary>Worked example 1 (N1 — AI infrastructure building block): FAISS</summary>
 
-**One sentence:** FAISS — Meta AI's library for efficient similarity search over dense vectors — supports both approximate-nearest-neighbor indexes (e.g. HNSW, Lesson 1's C2) and exact/binary ones (e.g. `IndexBinaryFlat`), and it's that second, exact mode that's the clearest tie to capstone #1 (`solutions/visual-search`): Pinterest's own design binarizes its embeddings specifically so a brute-force, *exact* Hamming-distance scan stays cheap, deliberately avoiding ANN approximation rather than relying on it.
+**One sentence:** FAISS — Meta AI's library for efficient similarity search over dense vectors — supports both approximate-nearest-neighbor indexes (e.g. HNSW, Lesson 1's C2) and exact/binary ones (e.g. `IndexBinaryFlat`), and it's that second, exact mode that's the clearest tie to capstone #1 (`case-studies/visual-search`): Pinterest's own design binarizes its embeddings specifically so a brute-force, *exact* Hamming-distance scan stays cheap, deliberately avoiding ANN approximation rather than relying on it.
 
 **Why this matters:** This is the "shared principle across rows" move N4 asks for — but it's also a reminder that the principle isn't always the obvious one: FAISS's reputation is for ANN search, yet capstone #1's actual connection to it runs through its exact-search mode, not its approximate one. Making the connection well means matching the library's real capability to the paper's real technique, not to what its name suggests.
 </details>
@@ -23,7 +23,7 @@ The three worked examples below show what that one sentence should look like —
 <details>
 <summary>Worked example 2 (N2 — Company AI architecture): Notion AI</summary>
 
-**One sentence:** Notion AI's per-task model routing by cost/latency/quality maps back to Lesson 1's B3 (model routing/gateway) and to capstone #15 (`solutions/llm-api-gateway`), whose entire design is this same routing decision made generic across providers rather than across Notion's own internal task categories.
+**One sentence:** Notion AI's per-task model routing by cost/latency/quality maps back to Lesson 1's B3 (model routing/gateway) and to capstone #15 (`case-studies/llm-api-gateway`), whose entire design is this same routing decision made generic across providers rather than across Notion's own internal task categories.
 
 **Why this matters:** This is a case where the mapping runs two levels deep at once — a Lesson Concept *and* a capstone — which is normal; N4 never said the mapping has to be exactly one target, only that there has to be one you can actually name, not a vague "this seems AI-related."
 </details>
@@ -52,6 +52,6 @@ This is the last checkpoint in the course — Lesson 11 is the final numbered le
 
 So instead of "move to Lesson N+1":
 
-- **Go deepen your own practice in `solutions/`.** The 14 capstones are where everything from Lessons 1-11 actually gets exercised end to end — if you haven't worked through all of them yet, that's a better next step than anything new in this repo.
+- **Go deepen your own practice in `case-studies/`.** The 14 capstones are where everything from Lessons 1-11 actually gets exercised end to end — if you haven't worked through all of them yet, that's a better next step than anything new in this repo.
 - **Go past this repo's curated depth, on purpose.** This repo deliberately curated core system design down to what an AI engineer specifically needs (Lessons 3-7) and AI-native material down to a single refresher (Lesson 1) — `system-design-primer` itself remains the reference for going further than that curation (its own exhaustive company-architecture list, SQL-tuning internals, full OSI-layer detail) once you know specifically what you want to go deeper on.
 - **Otherwise: you're done.** You've completed all 11 lessons and their checkpoints. There's nothing further being added to the numbered sequence.

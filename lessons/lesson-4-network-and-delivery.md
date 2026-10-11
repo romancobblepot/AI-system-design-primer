@@ -54,7 +54,7 @@ So the real worst-case client-visible outage isn't just "however long it takes y
 
 Neither is "correct" — it's a direct trade against how fast you need failover to actually take effect.
 
-**Case-study pointer:** Best fit is capstone #15 (`solutions/llm-api-gateway`) — its premise is multi-provider routing and fallback on provider outage, and DNS-level geolocation/latency routing is the network layer underneath that gateway's own application-level routing logic, directing a client to the nearest healthy *region* before any request-level routing decision happens at all. This pairing is a reasoned judgment call, not a one-to-one mapping.
+**Case-study pointer:** Best fit is capstone #15 (`case-studies/llm-api-gateway`) — its premise is multi-provider routing and fallback on provider outage, and DNS-level geolocation/latency routing is the network layer underneath that gateway's own application-level routing logic, directing a client to the nearest healthy *region* before any request-level routing decision happens at all. This pairing is a reasoned judgment call, not a one-to-one mapping.
 
 **Source(s) and further reading:**
 
@@ -104,7 +104,7 @@ A 95% cache hit ratio for static assets means the origin server only has to hand
 - **Push CDN:** predictable, always-warm edge caches and a fast first byte for every user — but you manage every update actively, and pay for storage whether or not content is ever requested.
 - **Pull CDN:** hands-off, only caches what's actually requested — but the first user hitting a cold edge node after a deploy or cache expiry pays a real latency penalty on that cache-miss round trip to the origin, and popular-but-frequently-expiring content can repeatedly flood the origin with near-identical "first" requests from different edge nodes.
 
-**Case-study pointer:** Best fit is capstone #12 (`solutions/multi-agent-customer-support`) — its subject is a customer-support platform (grounded in the Sierra/Klarna case studies), implying a large, distributed, external user base: exactly the audience that makes a CDN worth having in front of its chat UI's static front-end assets, not its multi-agent orchestration logic. Note the boundary: capstone #12's own write-up and sourcing cover orchestration and hand-off design, not asset delivery — this pointer connects to that capstone's necessary-but-unwritten-about front-end, not its documented core lesson. This pairing is a reasoned judgment call, not a one-to-one mapping.
+**Case-study pointer:** Best fit is capstone #12 (`case-studies/multi-agent-customer-support`) — its subject is a customer-support platform (grounded in the Sierra/Klarna case studies), implying a large, distributed, external user base: exactly the audience that makes a CDN worth having in front of its chat UI's static front-end assets, not its multi-agent orchestration logic. Note the boundary: capstone #12's own write-up and sourcing cover orchestration and hand-off design, not asset delivery — this pointer connects to that capstone's necessary-but-unwritten-about front-end, not its documented core lesson. This pairing is a reasoned judgment call, not a one-to-one mapping.
 
 **Source(s) and further reading:**
 
@@ -155,7 +155,7 @@ An **L4** load balancer only ever sees the destination IP address and port (e.g.
 - **L7:** enables real capacity-aware routing (e.g. sending large-context requests to replicas provisioned with more GPU memory), but adds parsing overhead to every request — and if it's also doing SSL termination, that's decryption overhead on top.
 - **Session persistence:** solves a real problem — if a multi-turn streaming conversation's follow-up request lands on a *different* replica than the one holding that conversation's KV cache (Lesson 1, Concept B1) in GPU memory, that replica has to recompute the KV cache from scratch, wasting the exact GPU memory and compute the cache existed to save. But it can also create uneven load, since the load balancer loses the freedom to redistribute a "sticky" client's traffic elsewhere.
 
-**Case-study pointer:** capstone #10 (`solutions/llm-inference-serving`) is the confirmed fit here — this Concept is best framed as "routing across inference-server replicas/GPU pools," which is exactly what capstone #10's PagedAttention/KV-cache-management subject matter sits behind.
+**Case-study pointer:** capstone #10 (`case-studies/llm-inference-serving`) is the confirmed fit here — this Concept is best framed as "routing across inference-server replicas/GPU pools," which is exactly what capstone #10's PagedAttention/KV-cache-management subject matter sits behind.
 
 **Source(s) and further reading:**
 
@@ -203,7 +203,7 @@ A request-based limit of "100/minute" is satisfied identically whether each of t
 
 **Trade-offs considered:** Request-based rate limiting is simple to implement and cheap to check (just count requests) but doesn't bound actual compute/cost exposure for LLM traffic, since token count per request varies by orders of magnitude. Token-based rate limiting (or a hybrid of both) actually bounds cost, but requires either tokenizing the request up front or estimating its token count before deciding whether to allow it — adding a small amount of per-request latency and complexity purely to make the admission decision, on top of whatever the request itself costs once admitted.
 
-**Case-study pointer:** capstone #15 (`solutions/llm-api-gateway`) is the confirmed fit for this Concept. Its sourcing is explicitly secondary/product-documentation (no single company has published a primary engineering teardown of this specific pattern) — drawn from LiteLLM's open-source proxy docs (OpenAI-compatible multi-provider routing, retries, fallback, per-key/team/model rate limits), Portkey's product docs (managed routing, load balancing, fallbacks, caching, guardrails, budget limits), and Cloudflare's AI Gateway docs (edge-hosted proxy with caching, rate limiting, analytics). Its own stated lesson is exactly the one this Concept's worked example demonstrates: classic gateway patterns (rate limiting, load balancing, caching, failover) don't transfer to LLM traffic unchanged.
+**Case-study pointer:** capstone #15 (`case-studies/llm-api-gateway`) is the confirmed fit for this Concept. Its sourcing is explicitly secondary/product-documentation (no single company has published a primary engineering teardown of this specific pattern) — drawn from LiteLLM's open-source proxy docs (OpenAI-compatible multi-provider routing, retries, fallback, per-key/team/model rate limits), Portkey's product docs (managed routing, load balancing, fallbacks, caching, guardrails, budget limits), and Cloudflare's AI Gateway docs (edge-hosted proxy with caching, rate limiting, analytics). Its own stated lesson is exactly the one this Concept's worked example demonstrates: classic gateway patterns (rate limiting, load balancing, caching, failover) don't transfer to LLM traffic unchanged.
 
 **Source(s) and further reading:**
 

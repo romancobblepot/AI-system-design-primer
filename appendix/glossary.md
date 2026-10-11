@@ -1,6 +1,6 @@
 # Glossary
 
-Every term introduced across the 11 lessons and the `solutions/` capstones, one line each, for fast lookup. Organized alphabetically, with letter-group headers, so both the `solutions/`-sourced entries and the lesson-sourced entries below sit in one unified, lookup-friendly list.
+Every term introduced across the 11 lessons and the `case-studies/` capstones, one line each, for fast lookup. Organized alphabetically, with letter-group headers, so both the `case-studies/`-sourced entries and the lesson-sourced entries below sit in one unified, lookup-friendly list.
 
 ---
 
@@ -14,8 +14,8 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 - **A/B testing** — running two or more versions of something concurrently against live traffic, splitting real requests between them, and comparing a measured outcome (e.g. a golden-set pass rate) between the groups, rather than only testing offline before a full rollout.
 - **ABAC (attribute-based access control)** — an access-control model where a single IAM policy references the calling identity's own attribute (e.g. a `tenant_id` tag) via a policy variable at evaluation time, so one policy document — not one per tenant — still enforces per-tenant scoping on a shared, pooled resource.
 - **AbortController** — a standard browser/JavaScript API object whose `.abort()` call cancels an in-flight request it's attached to, including a streaming one; the client-side half of mid-stream cancellation.
-- **Action grounding / action-grounding error** — translating a model's intended action on a graphical interface into the correct concrete low-level input (e.g. the exact pixel coordinate of a button) such that executing it actually produces the intended effect; an action-grounding error is when the plan was correct but the concrete input emitted didn't actually correspond to the intended target, so the action "succeeds" while still being wrong — used in `solutions/computer-use-agent` as this capstone's central structural failure mode.
-- **Active learning (for rare classes)** — a training methodology where the model/pipeline itself actively selects which not-yet-labeled examples get sent to human labelers next (e.g. via uncertainty sampling), rather than labeling a passive random sample, to maximize how much signal a scarce labeling budget buys for a rare category — used in `solutions/harmful-content-detection` as OpenAI's own three-pipeline mechanism, reported there to capture undesired content 10+ times more effectively than random sampling.
+- **Action grounding / action-grounding error** — translating a model's intended action on a graphical interface into the correct concrete low-level input (e.g. the exact pixel coordinate of a button) such that executing it actually produces the intended effect; an action-grounding error is when the plan was correct but the concrete input emitted didn't actually correspond to the intended target, so the action "succeeds" while still being wrong — used in `case-studies/computer-use-agent` as this capstone's central structural failure mode.
+- **Active learning (for rare classes)** — a training methodology where the model/pipeline itself actively selects which not-yet-labeled examples get sent to human labelers next (e.g. via uncertainty sampling), rather than labeling a passive random sample, to maximize how much signal a scarce labeling budget buys for a rare category — used in `case-studies/harmful-content-detection` as OpenAI's own three-pipeline mechanism, reported there to capture undesired content 10+ times more effectively than random sampling.
 - **Active-active failover** — multiple replicas handle live traffic simultaneously at all times, so one failing causes no cutover delay, only reduced total capacity until it's replaced.
 - **Active-passive failover** — one replica handles all live traffic while one or more standby replicas sit idle, taking over only after a failover delay once the active one fails.
 - **AES (Advanced Encryption Standard)** — the symmetric-key cipher (commonly used with a 256-bit key) applied to data at rest, e.g. in a cloud storage bucket's default server-side encryption configuration.
@@ -36,10 +36,10 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 - **Back-of-envelope estimate** — a deliberately quick, order-of-magnitude numeric calculation, built via a five-step method (state assumptions, decompose, compute with units, sanity-check the magnitude, name the most sensitive assumption) to catch a design mistake before real benchmarking.
 - **BASE** — the consistency philosophy most NoSQL databases follow instead of ACID: Basically Available (stays responsive even if a response isn't freshest), Soft state (stored state changes over time even without new writes, as replicas converge), Eventually consistent.
 - **Batching (continuous / dynamic batching)** — grouping multiple in-flight requests into one GPU forward pass instead of processing them one at a time; continuous (dynamic) batching lets a new request join an in-progress batch rather than waiting for it to finish.
-- **Binarized embeddings** — an embedding whose floating-point dimensions have each been collapsed to a single bit, cutting storage by roughly 32x and reducing similarity comparison to a cheap Hamming-distance/popcount operation — used in `solutions/visual-search` for Pinterest's index storage/retrieval.
+- **Binarized embeddings** — an embedding whose floating-point dimensions have each been collapsed to a single bit, cutting storage by roughly 32x and reducing similarity comparison to a cheap Hamming-distance/popcount operation — used in `case-studies/visual-search` for Pinterest's index storage/retrieval.
 - **Blast radius** — the actual scope of systems, data, or users a single failure, bug, or compromised credential can reach and affect.
 - **Blocking the producer** — a back-pressure mechanism where a bounded queue's "add" operation doesn't return until space frees up, forcing the producer to slow to the consumer's drain rate.
-- **BM25** — a classic lexical (non-embedding) ranking algorithm that scores a document's relevance to a query from exact term matches, weighted by inverse document frequency and normalized for document length — used in `solutions/rag-contextual-retrieval` as "Contextual BM25."
+- **BM25** — a classic lexical (non-embedding) ranking algorithm that scores a document's relevance to a query from exact term matches, weighted by inverse document frequency and normalized for document length — used in `case-studies/rag-contextual-retrieval` as "Contextual BM25."
 - **Body** — the actual payload of an HTTP request or response — the content being sent or returned, as opposed to the headers' metadata about it.
 - **Bridge model (tenant isolation)** — a hybrid multi-tenant isolation model where some system layers are siloed per tenant and others are pooled across all tenants — the real-world default for most systems.
 - **BSON** — Binary JSON, a binary-encoded superset of the JSON format commonly used to physically store documents in a document-store database.
@@ -64,7 +64,7 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 - **Consul** — HashiCorp's service-networking tool, combining a service registry with built-in health checking and a DNS/HTTP interface for looking up healthy instances.
 - **Content filtering** — checking a model's generated natural-language output against a policy (usually via a trained classifier, not a fixed deny-list) before it's released to a user or acted on.
 - **Context window** — the maximum number of tokens (input plus output) a model can process in a single request; a hard ceiling set by the model, not a configurable option.
-- **Contextual Retrieval** — Anthropic's technique of prepending a short, LLM-generated, chunk-specific explanatory blurb to a document chunk before it's embedded and lexically indexed, so the chunk retains context that would otherwise be lost when split from its source document — used in `solutions/rag-contextual-retrieval` as that capstone's central technique.
+- **Contextual Retrieval** — Anthropic's technique of prepending a short, LLM-generated, chunk-specific explanatory blurb to a document chunk before it's embedded and lexically indexed, so the chunk retains context that would otherwise be lost when split from its source document — used in `case-studies/rag-contextual-retrieval` as that capstone's central technique.
 - **Copy-on-write (KV cache)** — letting two requests share the same underlying KV-cache block until one of them needs to modify it, at which point only that one gets its own private copy.
 - **Cosine similarity** — the cosine of the angle between two vectors, ranging from -1 to 1, where values near 1 mean the vectors point in nearly the same direction; the common distance measure for comparing embeddings.
 - **Cost attribution** — assigning a system's total usage-based spend back down to the specific dimension that generated it (a request, user, tenant, or product feature), rather than leaving it visible only as one aggregate number.
@@ -88,30 +88,30 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 - **Embeddings** — a numeric vector produced by an embedding model representing a piece of text's meaning, so texts with similar meaning end up with vectors close together by a distance measure such as cosine similarity.
 - **Encryption at rest** — encrypting data while it's stored (on disk, in a backup, in object storage) so someone who gains access to the storage medium itself still can't read it without the key.
 - **Encryption in transit** — encrypting data while it's moving across a network, so anyone intercepting the traffic sees only ciphertext.
-- **Equity re-ranking (equality of opportunity / equalized odds)** — adjusting a model's raw ranked output so equally-qualified members of different groups receive statistically equal outcomes, rather than shipping a purely score-maximizing ranking unmodified — used in `solutions/pymk-friend-recommendation` for LinkedIn's fairness pass correcting a recommendation-feedback-loop advantage for already-frequent members.
+- **Equity re-ranking (equality of opportunity / equalized odds)** — adjusting a model's raw ranked output so equally-qualified members of different groups receive statistically equal outcomes, rather than shipping a purely score-maximizing ranking unmodified — used in `case-studies/pymk-friend-recommendation` for LinkedIn's fairness pass correcting a recommendation-feedback-loop advantage for already-frequent members.
 - **etcd** — a distributed, strongly-consistent key-value store built on the Raft consensus algorithm, used internally by Kubernetes to track cluster state including which service endpoints currently exist.
 - **Eval** — a measurement run over a whole set of examples using a scoring method tolerant of correct-but-differently-phrased output, replacing a single hardcoded-string assertion for freeform LLM generation.
 - **Eventual consistency** — after a write, replicas will converge to the same value given enough time with no further writes, but with no guarantee on how long that takes.
 - **Exactly-once delivery** — a message delivered precisely one time, with no loss and no duplication — the hardest delivery guarantee to implement correctly in a genuinely distributed system.
-- **Example age** — a training-time feature equal to how old a training example is relative to the end of the training window, set to zero/negative at serving time — used in `solutions/video-recommendation` to correct YouTube's recommender for an implicit bias toward the past.
+- **Example age** — a training-time feature equal to how old a training example is relative to the end of the training window, set to zero/negative at serving time — used in `case-studies/video-recommendation` to correct YouTube's recommender for an implicit bias toward the past.
 - **External fragmentation** — wasted memory between allocations, where free space exists but isn't contiguous enough to satisfy a new request — the problem fixed-size paged blocks eliminate.
-- **Extreme multiclass classification / candidate sampling (sampled softmax)** — framing prediction as classification among an extremely large number of classes, trained efficiently via candidate sampling (computing loss only over the true label plus sampled negatives) — used in `solutions/video-recommendation` as YouTube's candidate-generation training method.
+- **Extreme multiclass classification / candidate sampling (sampled softmax)** — framing prediction as classification among an extremely large number of classes, trained efficiently via candidate sampling (computing loss only over the true label plus sampled negatives) — used in `case-studies/video-recommendation` as YouTube's candidate-generation training method.
 
 ### F
 
 - **Failover delay** — the time to detect a failed active replica and promote a standby, during which requests may fail, under active-passive failover.
 - **Failure threshold** — the number of consecutive failed health-check probes required before a service instance is actually marked unhealthy and pulled from routing.
 - **Fan-out (agentic)** — one upstream unit of work (a single agent reasoning step) triggering several downstream tool calls at once instead of one, finishing in roughly the time of its slowest call instead of their sum — a production fan-out burst inflates a task queue's effective arrival rate well beyond its raw step rate.
-- **Feature hashing (the hashing trick)** — mapping a high-cardinality categorical feature to a fixed-size set of buckets via a deterministic hash function instead of an explicit lookup table — used in `solutions/ctr-prediction` as a technique Google's own paper explicitly tested and rejected for its sponsored-search system.
+- **Feature hashing (the hashing trick)** — mapping a high-cardinality categorical feature to a fixed-size set of buckets via a deterministic hash function instead of an explicit lookup table — used in `case-studies/ctr-prediction` as a technique Google's own paper explicitly tested and rejected for its sponsored-search system.
 - **Federation (functional partitioning)** — splitting one database into several separate databases along functional/domain lines, each handling a smaller slice of traffic, at the cost of resolving cross-database joins in application code.
 - **Flow control** — TCP's throttling of a sender so it never overwhelms the receiver's buffer.
 - **Forward pass** — one full run of input through a neural network's layers to produce output.
-- **FTRL-Proximal / per-coordinate learning rates** — an online-learning algorithm that reliably drives unneeded model coefficients to exactly zero, paired with a learning-rate schedule computed separately per feature — used in `solutions/ctr-prediction` as Google's own confirmed training algorithm, reported to cut AucLoss by 11.2% over a single global learning rate.
+- **FTRL-Proximal / per-coordinate learning rates** — an online-learning algorithm that reliably drives unneeded model coefficients to exactly zero, paired with a learning-rate schedule computed separately per feature — used in `case-studies/ctr-prediction` as Google's own confirmed training algorithm, reported to cut AucLoss by 11.2% over a single global learning rate.
 
 ### G
 
 - **Gateway-as-choke-point pattern** — a credential-handling architecture where an agent never holds a tool's real, long-lived credential directly; a single gateway holds the actual secrets and issues each tool call a short-lived, narrowly-scoped token on demand, so a leak exposes something that expires on its own.
-- **GBDT (gradient-boosted decision trees)** — an ensemble of many shallow decision trees, built one at a time so each new tree corrects the errors the ensemble-so-far is still making — used in `solutions/airbnb-search-ranking` as Airbnb's pre-deep-learning production ranking model.
+- **GBDT (gradient-boosted decision trees)** — an ensemble of many shallow decision trees, built one at a time so each new tree corrects the errors the ensemble-so-far is still making — used in `case-studies/airbnb-search-ranking` as Airbnb's pre-deep-learning production ranking model.
 - **Generated column** — a database column whose value is computed automatically from other columns in the same row (e.g. `shard_key = user_id % N`) rather than written directly by the application.
 - **Geolocation-based routing** — a DNS routing policy that returns the endpoint registered as closest to (or designated for) the querying resolver's geographic region.
 - **Golden dataset** — a fixed, curated set of input examples paired with hand-verified correct outputs, used to measure a pass rate across many examples rather than a single pass/fail.
@@ -124,7 +124,7 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 - **Head-of-line (HOL) blocking** — a consequence of TCP's ordered-delivery guarantee: if one segment is lost, every byte sent after it is held back from the application until the lost segment is retransmitted, even if those later bytes already arrived.
 - **Header** — a key-value piece of metadata attached to an HTTP request or response, separate from its actual content, e.g. stating the body's format or the target host.
 - **Health check** — a periodic probe (commonly a lightweight HTTP request) used to decide whether a service instance stays in the pool of routable candidates.
-- **Heterogeneous network** — a graph containing more than one type of node and more than one type of edge — used in `solutions/pymk-friend-recommendation` to describe LinkedIn's production graph.
+- **Heterogeneous network** — a graph containing more than one type of node and more than one type of edge — used in `case-studies/pymk-friend-recommendation` to describe LinkedIn's production graph.
 - **HNSW (Hierarchical Navigable Small World)** — a graph-based approximate-nearest-neighbor index letting a vector database find the nearest stored vectors to a query without comparing against every vector one by one.
 - **Horizontal scaling** — handling more load by adding more machines that each run a copy of the same thing and spreading work across them, rather than making one machine bigger; no single hard ceiling, but requires something in front to divide the work.
 - **Hosted vs. self-hosted serving** — hosted serving means calling a model through a provider's API, paying per token while the provider owns the infrastructure; self-hosted means running the model's weights yourself, trading convenience for control over cost, data residency, and customization.
@@ -159,11 +159,11 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 
 - **L4 (transport-layer) load balancing** — routing based only on TCP/UDP connection-level information (source/destination IP and port), fast and protocol-agnostic but blind to request content.
 - **L7 (application-layer) load balancing** — routing based on actual request content (HTTP method, path, headers, body), enabling capacity-aware routing at the cost of parsing every request.
-- **LambdaRank / pairwise learning-to-rank (NDCG-weighted)** — a ranking-model training technique trained on (relevant, not-relevant) example pairs, with loss scaled by how much NDCG would change if the pair's positions were swapped — used in `solutions/airbnb-search-ranking` as the second stage of Airbnb's neural-ranker evolution.
+- **LambdaRank / pairwise learning-to-rank (NDCG-weighted)** — a ranking-model training technique trained on (relevant, not-relevant) example pairs, with loss scaled by how much NDCG would change if the pair's positions were swapped — used in `case-studies/airbnb-search-ranking` as the second stage of Airbnb's neural-ranker evolution.
 - **Latency** — the time between sending a request and receiving some or all of its response; a duration, not a rate.
 - **Latency-based routing** — a DNS routing policy returning whichever registered endpoint has historically had the lowest latency from the resolver's location.
 - **Least privilege** — granting any identity, process, service, or credential only the minimum set of permissions it actually needs, and no more.
-- **Little's Law** — a queueing-theory identity holding for any stable queue: the average number of items in the system (N) equals the average arrival rate (λ) times the average time an item spends in the system (W) — `N = λ × W` — used in `solutions/multi-agent-customer-support` to estimate concurrent support sessions from disclosed monthly-conversation and resolution-time figures.
+- **Little's Law** — a queueing-theory identity holding for any stable queue: the average number of items in the system (N) equals the average arrival rate (λ) times the average time an item spends in the system (W) — `N = λ × W` — used in `case-studies/multi-agent-customer-support` to estimate concurrent support sessions from disclosed monthly-conversation and resolution-time figures.
 - **LLM-as-judge** — using a separate LLM call to score a candidate output's quality against a rubric, instead of comparing it to one fixed expected string.
 - **Load balancer** — a component distributing incoming requests across multiple backend instances so none is overwhelmed, and routing around failed instances.
 - **Load shedding** — a back-pressure mechanism that drops the newest or oldest queued item rather than queueing it, accepting data loss in exchange for a bounded queue.
@@ -179,11 +179,11 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 - **Method** — the verb at the start of an HTTP request stating what kind of action is being asked for, commonly GET (retrieve something) or POST (submit data, often to create something or trigger an action).
 - **Microservices** — an architectural style splitting an application into a suite of small, independently deployable services, each in its own process, communicating over a network.
 - **MicroVM** — an isolation boundary giving each sandboxed environment its own kernel rather than sharing the host's, stronger than a plain container while far lighter than a traditional full VM.
-- **Model cascade (cheap-filter-then-expensive-judge chain)** — a multi-tier inference pipeline where a fast, cheap model screens every item first, escalating only flagged/uncertain items to a slower, expensive model — used in `solutions/harmful-content-detection`'s LLM-era extension to cut judge-tier cost by roughly 90% in its own worked example.
+- **Model cascade (cheap-filter-then-expensive-judge chain)** — a multi-tier inference pipeline where a fast, cheap model screens every item first, escalating only flagged/uncertain items to a slower, expensive model — used in `case-studies/harmful-content-detection`'s LLM-era extension to cut judge-tier cost by roughly 90% in its own worked example.
 - **Model routing / gateway** — a layer in front of one or more models that decides, per request, which model/provider handles it based on cost, latency, or capability, often also providing a unified API, rate limiting, and failover.
 - **Monolith** — an application built and deployed as a single, unified process, where every piece of functionality runs and deploys together.
 - **Multi-agent orchestration** — an architecture where more than one agent, often with distinct roles (planner, executor, validator), collaborates on a single task, coordinated by a supervisor or a hand-off protocol.
-- **Multi-task (embedding) learning** — training one model with a shared backbone and several task-specific output heads at once, so a single learned embedding serves every task — used in `solutions/visual-search` to replace three specialized Pinterest embeddings with one.
+- **Multi-task (embedding) learning** — training one model with a shared backbone and several task-specific output heads at once, so a single learned embedding serves every task — used in `case-studies/visual-search` to replace three specialized Pinterest embeddings with one.
 - **Multi-tenant** — a single deployed system or platform serving more than one distinct customer or organization from shared underlying infrastructure, rather than each customer getting a separate deployment.
 - **Mutual TLS (mTLS)** — a TLS variant where both sides of a connection present and verify a certificate, not just the client verifying the server, so one compromised internal service can't impersonate another.
 
@@ -195,8 +195,8 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 ### O
 
 - **Observability** — the property that a system's internal behavior can be understood from the data it emits (logs, metrics, traces/spans) without having anticipated the exact question in advance.
-- **Online learning** — a training paradigm where a model updates its parameters immediately after each training example arrives, rather than training over a fixed dataset in repeated passes — used in `solutions/ctr-prediction` so Google's CTR model can incorporate new clicks within minutes.
-- **OSWorld** — a benchmark and execution environment evaluating an agent's ability to complete real computer tasks via free-form mouse/keyboard control, graded by an automated check of the environment's real final state — used in `solutions/computer-use-agent` as the benchmark Anthropic's computer-use announcement reports results against.
+- **Online learning** — a training paradigm where a model updates its parameters immediately after each training example arrives, rather than training over a fixed dataset in repeated passes — used in `case-studies/ctr-prediction` so Google's CTR model can incorporate new clicks within minutes.
+- **OSWorld** — a benchmark and execution environment evaluating an agent's ability to complete real computer tasks via free-form mouse/keyboard control, graded by an automated check of the environment's real final state — used in `case-studies/computer-use-agent` as the benchmark Anthropic's computer-use announcement reports results against.
 
 ### P
 
@@ -232,7 +232,7 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 
 - **Raft consensus algorithm** — a protocol by which a cluster of nodes agrees on a single, consistent sequence of state changes even if some nodes fail; the mechanism underneath etcd's consistency guarantees.
 - **RAG (Retrieval-Augmented Generation)** — the pipeline letting an LLM answer using information outside its training data: chunking and embedding a corpus ahead of time, retrieving the most relevant chunks at query time, and inserting them into the prompt as context.
-- **Ranking function (multi-signal scoring)** — a scoring function combining several separate input signals (e.g. item popularity and predicted rating) into one score, rather than being identical to any one of them — used in `solutions/netflix-feed-ranking` as Netflix's own illustrated starting point for row ranking.
+- **Ranking function (multi-signal scoring)** — a scoring function combining several separate input signals (e.g. item popularity and predicted rating) into one score, rather than being identical to any one of them — used in `case-studies/netflix-feed-ranking` as Netflix's own illustrated starting point for row ranking.
 - **Rate limit** — a cap on how much traffic a client is allowed to send in a given time window, to protect backends and enforce fair usage or billing tiers.
 - **RDBMS** — a relational database management system built around fixed-schema tables joined via foreign keys and queried with SQL, typically offering ACID guarantees.
 - **ReAct (control-flow pattern)** — the model alternates, in a loop, between a reasoning step, taking an action, observing the result, and reasoning again, until it decides it has enough to answer.
@@ -245,10 +245,10 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 - **Replication lag** — the delay between a write committing on a database's primary and that write becoming visible on a given read replica.
 - **Request** — the message a client sends to a server, asking it to perform an action or return data.
 - **Request/response cycle** — the full round trip of a client sending a request, a server processing it and producing a response, and that response traveling back to the client; the basic, repeatable unit nearly every network interaction reduces to.
-- **Reranker / reranking** — a second retrieval stage where a model scores each (query, candidate-chunk) pair jointly, producing a more precise relevance ranking than independent embedding-similarity lookup — used in `solutions/rag-contextual-retrieval` as the final step before generation.
+- **Reranker / reranking** — a second retrieval stage where a model scores each (query, candidate-chunk) pair jointly, producing a more precise relevance ranking than independent embedding-similarity lookup — used in `case-studies/rag-contextual-retrieval` as the final step before generation.
 - **Response** — the message a server sends back to a client once it's done handling a request, containing the result, a confirmation, or an error.
-- **Residual / base estimate** — a base estimate is an existing, simpler prediction from a separate system; a residual is the gap between the actual outcome and that estimate — predicting the residual rather than the absolute value means a model only has to learn the gap — used in `solutions/uber-eta-prediction` as DeepETA's central pattern.
-- **Resolve rate** — the percentage of a benchmark's tasks scored "resolved" under that benchmark's own grading criterion — used in `solutions/autonomous-coding-agent` to report Cognition's own reported Devin figures.
+- **Residual / base estimate** — a base estimate is an existing, simpler prediction from a separate system; a residual is the gap between the actual outcome and that estimate — predicting the residual rather than the absolute value means a model only has to learn the gap — used in `case-studies/uber-eta-prediction` as DeepETA's central pattern.
+- **Resolve rate** — the percentage of a benchmark's tasks scored "resolved" under that benchmark's own grading criterion — used in `case-studies/autonomous-coding-agent` to report Cognition's own reported Devin figures.
 - **REST (REpresentational State Transfer)** — an API style built around resources (nouns) addressed by URLs, manipulated through a small fixed set of HTTP verbs, with stateless requests.
 - **Reverse proxy** — a server sitting in front of one or more backends, forwarding client requests on their behalf while hiding backend topology from the client; distinct from a load balancer in that it doesn't have to balance traffic across multiple instances.
 - **Rollback** — reverting a live system back to a previous, known-working version in response to a problem with the current one.
@@ -283,7 +283,7 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 - **Status code** — a three-digit number at the start of an HTTP response summarizing the outcome: codes starting with 2 mean success, 4 mean the client's request was the problem, and 5 mean the server's own handling was the problem.
 - **Strong consistency** — after a write completes, every subsequent read from any replica sees that write immediately, typically achieved via a quorum write.
 - **STS AssumeRole (AWS)** — the AWS Security Token Service call that issues a short-lived, narrowly-scoped credential (via a session policy and a `DurationSeconds` expiry) instead of handing out a long-lived secret directly — the concrete mechanism behind the Gateway-as-choke-point pattern.
-- **SWE-bench** — a benchmark of real GitHub issues paired with the human PR that originally fixed each one; a model-generated patch is scored "resolved" only if it meets a test-based grading criterion — used in `solutions/autonomous-coding-agent` as the offline benchmark Cognition's Devin announcement reports results against.
+- **SWE-bench** — a benchmark of real GitHub issues paired with the human PR that originally fixed each one; a model-generated patch is scored "resolved" only if it meets a test-based grading criterion — used in `case-studies/autonomous-coding-agent` as the offline benchmark Cognition's Devin announcement reports results against.
 
 ### T
 
@@ -296,7 +296,7 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 - **Time to first token (TTFT)** — the delay between sending a request and receiving the first generated token, dominated by how long the model takes to process the whole input prompt before producing output.
 - **TLD server** — the server responsible for all domains under one top-level domain (e.g. all `.com` domains), queried during DNS resolution after a root server.
 - **TLS (Transport Layer Security)** — the standard protocol for encryption in transit, in which two endpoints exchange and verify certificates and agree on encryption keys before all further data is encrypted.
-- **Token bucket algorithm** — a rate-limiting method where a "bucket" holds a capped number of tokens that refill at a steady rate; requests are throttled once it's empty — used in `solutions/llm-api-gateway` to rate-limit by token count rather than request count.
+- **Token bucket algorithm** — a rate-limiting method where a "bucket" holds a capped number of tokens that refill at a steady rate; requests are throttled once it's empty — used in `case-studies/llm-api-gateway` to rate-limit by token count rather than request count.
 - **Token economics** — reasoning about AI costs in terms of tokens rather than requests: per-million-token pricing (usually cheaper for input than output), and a token averaging roughly 3/4 of an English word.
 - **Token-based cost and latency** — the property that both the dollar cost and the response time of an AI request scale with the number of tokens processed and generated, not a fixed per-request charge.
 - **Token-generation throughput** — the aggregate rate, across all requests a serving system is handling, at which it produces output tokens; the AI-world equivalent of QPS, measured at the token level.
@@ -304,9 +304,9 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 - **Total completion time** — TTFT plus (output tokens − 1) × inter-token latency: the full time until the last token of a response arrives.
 - **Trace** — the complete record of one end-to-end operation (e.g. one agent session), composed of nested spans.
 - **Transformer** — the neural network architecture behind virtually all modern LLMs, processing a sequence by weighing how much each token should "attend to" every other token.
-- **Triangle-closing** — a graph-based candidate-generation feature: if A knows B and B knows C, hypothesizing A and C are unusually likely to know each other too — used in `solutions/pymk-friend-recommendation` as LinkedIn's core friends-of-friends signal.
+- **Triangle-closing** — a graph-based candidate-generation feature: if A knows B and B knows C, hypothesizing A and C are unusually likely to know each other too — used in `case-studies/pymk-friend-recommendation` as LinkedIn's core friends-of-friends signal.
 - **TTL (time to live)** — a duration published with a DNS record or cache entry telling resolvers/clients how long they may trust a cached answer before re-checking it.
-- **Two-stage retrieval-then-rank architecture (candidate generation + ranking)** — a recommender design where a cheap first-stage model narrows a huge corpus to a small candidate set, and a more expensive second-stage model scores only that set — used in `solutions/video-recommendation` as YouTube's own split.
+- **Two-stage retrieval-then-rank architecture (candidate generation + ranking)** — a recommender design where a cheap first-stage model narrows a huge corpus to a small candidate set, and a more expensive second-stage model scores only that set — used in `case-studies/video-recommendation` as YouTube's own split.
 
 ### U
 
@@ -316,7 +316,7 @@ Every term introduced across the 11 lessons and the `solutions/` capstones, one 
 
 ### V
 
-- **Validator/guardrail agent (and validator catch-rate)** — a distinct agent whose only job is checking another agent's proposed action against policy, correctness, and safety constraints before it executes; validator catch-rate is the fraction of actually-bad proposed actions it correctly blocks — used in `solutions/multi-agent-customer-support` as that capstone's central teaching point.
+- **Validator/guardrail agent (and validator catch-rate)** — a distinct agent whose only job is checking another agent's proposed action against policy, correctness, and safety constraints before it executes; validator catch-rate is the fraction of actually-bad proposed actions it correctly blocks — used in `case-studies/multi-agent-customer-support` as that capstone's central teaching point.
 - **Vector database** — a database purpose-built to store large numbers of embeddings and answer "find the k nearest vectors to this query" efficiently, via a specialized index such as HNSW.
 - **Vertical scaling** — handling more load by making a single machine bigger or more powerful (more CPU, memory, faster disk) rather than adding more machines; has a hard ceiling, since there's always a biggest machine you can buy or rent.
 
