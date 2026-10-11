@@ -12,11 +12,11 @@ Most people building AI applications have already picked up the AI-native vocabu
 - Queues
 - CAP trade-offs
 
-So this repo starts with a quick AI-native refresher, then spends most of its time on that classic material — taught directly, not just linked to, and tied back to a real AI/agentic case study instead of a generic textbook example.
+So this repo starts with a quick AI-native refresher, then spends most of its time on that classic SysDesign material — taught directly, not just linked to, and tied back to a real AI/agentic case study instead of a generic textbook example.
 
 ## Lessons & checkpoints
 
-Each lesson has a matching checkpoint — a short self-check, not a graded test — meant to be done right after the lesson, before moving on. Both columns below are clickable.
+Each lesson has a matching checkpoint — a short self-check, not a graded test — meant to be done right after the lesson, before moving on.
 
 | # | Lesson | Checkpoint | Topic |
 |---|---|---|---|
@@ -34,7 +34,7 @@ Each lesson has a matching checkpoint — a short self-check, not a graded test 
 
 ## Case studies
 
-On top of the 11 lessons, there are **14 worked case studies** — full system designs covering constraints, back-of-envelope math, architecture, and explicit trade-offs, with every real-world claim tagged by how confident the sourcing is. Each one pulls together concepts from several lessons at once, the way a real design actually would.
+On top of the 11 lessons, there are **14 worked SysDesign case studies** — full system designs covering constraints, back-of-envelope math, architecture, and explicit trade-offs, with every real-world claim tagged by how confident the sourcing is. Each one pulls together concepts from several lessons at once, the way a real design actually would.
 
 | # | Case study | What it's based on |
 |---|---|---|
