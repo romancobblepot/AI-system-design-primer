@@ -1,4 +1,4 @@
-# 🏗️ AI System Design Primer
+# AI System Design Primer
 
 I built this as a standalone resource for my own AI system design prep. AI system design borrows most of its hard parts — scaling, caching, databases, queues, availability trade-offs — straight from classic system design, so this repo is deliberately structured like [`system-design-primer`](https://github.com/donnemartin/system-design-primer), and taught the way I learn best: a guided lesson/checkpoint format, same as my [`learn-docker`](https://github.com/romancobblepot/learn-docker) and [`learn-docker-ai-agents`](https://github.com/romancobblepot/learn-docker-ai-agents) repos.
 
@@ -84,7 +84,7 @@ If you've never touched classic system design before, start with Lesson 2 even t
 
 This isn't a finished, one-and-done repo — I keep adding new case studies and sharpening existing lessons as I learn more and run into new real-world examples worth covering. So if something's outdated, a case study you'd love to see is missing, or you just have a correction, contributions are genuinely welcome — open an issue or send a PR.
 
-## 🙌 Credits
+## Credits 🙌 
 
 This repo stands on the shoulders of people who've put real effort into teaching this stuff well. Big credit to:
 
