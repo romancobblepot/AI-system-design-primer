@@ -2,7 +2,6 @@
 
 I built this as a standalone resource for my own AI system design prep. But AI system design doesn't exist in a vacuum — it borrows most of its hard parts (scaling, caching, databases, queues, availability trade-offs) straight from classic system design. So rather than reinvent that, this repo is deliberately structured like [`system-design-primer`](https://github.com/donnemartin/system-design-primer) — the well-known reference for that material — and teaches it the way I actually learn best: as a guided lesson/checkpoint course, the same format I used in my [`learn-docker`](https://github.com/romancobblepot/learn-docker) and [`learn-docker-ai-agents`](https://github.com/romancobblepot/learn-docker-ai-agents) courses.
 
-Put simply: `system-design-primer` gives the topic depth, `learn-docker-ai-agents` gives the teaching shape, and this repo is what you get when you point that shape at AI/agentic systems instead of Docker tooling.
 
 ## Why this exists
 
