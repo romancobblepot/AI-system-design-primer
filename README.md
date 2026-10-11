@@ -86,7 +86,7 @@ This isn't a finished, one-and-done repo — I keep adding new case studies and 
 
 ## Credits 🙌 
 
-This repo exists of my interest in this domain, and my interest stems out of the immense impact these people have had on my learning journey and in the field of AI/ML in general.So big ups to:
+This repo exists of my interest in this domain, and my interest stems out of the immense impact these people have had on my learning journey and in the field of AI/ML in general, so big ups to:
 
 - **[Chip Huyen](https://huyenchip.com/)** — her two books, [*Designing Machine Learning Systems*](https://www.huyenchip.com/books/) and *AI Engineering* ([O'Reilly](https://www.oreilly.com/library/view/ai-engineering/9781098166298/)), are about as good as it gets for actually understanding how production ML/AI systems hold together. If you only read two books on this topic, make them these.
 - **[Dr. Raj Dandekar, Dr. Rajat Dandekar, Dr. Sreedath Panat, and the rest of the team at Vizuara](https://www.youtube.com/@vizuara)** — MIT-PhD-level rigor on AI/ML fundamentals, explained without the usual jargon wall. A genuinely great resource if you want to go deeper on the ML/DL side.
