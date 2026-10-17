@@ -104,7 +104,7 @@ Go check out their work — all of it is worth your time.
 Clone the repo and run the included preview server (no dependencies beyond Python 3):
 
 ```bash
-git clone git@github.com:romancobblepot/ai-system-design-primer.git
+git clone https://github.com/romancobblepot/AI-system-design-primer.git
 cd ai-system-design-primer
 python3 preview.py
 ```
