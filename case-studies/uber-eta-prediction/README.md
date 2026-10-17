@@ -1,319 +1,425 @@
 # Capstone #7: ETA / Arrival-Time Prediction — Uber's DeepETA
 
-**Source(s):** Primary — Uber Engineering, *"DeepETA: How Uber Predicts Arrival Times"* (originally published at `eng.uber.com/deepeta-how-uber-predicts-arrival-times`; that exact URL no longer resolves directly — Uber's engineering blog has been reorganized since the post's original 2022 publication, and the post is now served from Uber's localized `uber.com` blog mirrors, e.g. `uber.com/en-CA/blog/deepeta-how-uber-predicts-arrival-times/`, confirmed live and matching the original title). Primary (companion technical paper) — Hu, Binaykiya, Frank, and Cirit, *"DeeprETA: An ETA Post-processing System at Scale,"* arXiv:2206.02127 (submitted June 5, 2022); all four authors list an `@uber.com` email and an affiliation of "Uber Technologies Inc., San Francisco, CA, USA" directly on the paper itself — this is Uber's own engineering team publishing the underlying technical work, not third-party coverage.
+## At a glance
 
-**Confidence:** Mixed-fidelity by source, stated honestly rather than blended together. The **arXiv paper was read in full, in raw text**, fetched directly by this document's author (via its ar5iv HTML rendering, converted to plain text and searched directly) — every claim below tagged **(paper)** was located and character-checked against that raw text before being quoted or stated as fact; nothing tagged (paper) is a secondhand paraphrase. The **blog post's live URLs could not be fetched as raw text** by this document's author (direct `curl` requests to both the original `eng.uber.com` URL and its `uber.com` mirrors were blocked or redirected). A **Wayback Machine snapshot of the original post does exist and was fetched as raw HTML** (`https://web.archive.org/web/20220701063549/https://eng.uber.com/deepeta-how-uber-predicts-arrival-times/`, retrieved directly via `curl`, parsed to plain text, and searched directly) — the specific blog-attributed claims in Step 2 (the "a few milliseconds at most" latency requirement) and Step 5 (the general "vast majority of parameters live in embedding lookup tables" statement, and the separate, geospatial-specific "quantize coordinates → hash lookup → O(1) time" statement, contrasted against O(log N) tree lookup and O(N²) fully-connected-layer cost) were located and character-checked against that raw snapshot text and are tagged **(blog, character-verified via Wayback Machine snapshot)**. Every other blog-attributed claim in this document (e.g., Step 4's account of why Uber moved from XGBoost to deep learning) was not re-checked against that snapshot and remains tagged **(blog, paraphrased — not independently character-verified)**. Regardless of verification status, nothing attributed to the blog post appears inside quotation marks anywhere in this document — even the character-verified claims above are reported as paraphrases, never as direct quotes, per this repo's standing quote-fidelity rule for this source. **On the relationship between the two sources:** the blog calls the system "DeepETA"; the paper calls the model "DeeprETANet" and the overall approach "DeeprETA." Every specific technical claim recoverable from both — self-attention over feature vectors rather than word tokens, no positional encoding because feature order doesn't matter, a prior production model built from per-region XGBoost, bucketized continuous features, geospatial feature hashing — matches across both sources as paraphrased by the fetch tool, which is consistent with "DeepETA" being the public-facing name for the same system the paper documents in technical depth, published by the same team at roughly the same time. This document treats them as describing one system, but did not independently diff the blog's raw text against the paper's raw text to confirm this beyond the consistency check just described — a limitation stated here rather than papered over. This capstone's central teaching point, "predict the residual, not the absolute value," is confirmed as the paper's own actual approach (the paper's own words, verified below, are that it "treats the routing engine ETA as a noisy estimate of the true arrival time" and predicts "a residual that added on top of" it), even though "predict the residual, not the absolute value" is this repo's own compressed paraphrase of that mechanism, not a sentence lifted verbatim from either source.
+| Topic | Summary |
+|---|---|
+| Sources | Hu, Binaykiya, Frank and Cirit, "DeeprETA: An ETA Post-processing System at Scale," arXiv:2206.02127 (June 2022). Uber Engineering blog, "DeepETA: How Uber Predicts Arrival Times Using Deep Learning," February 10, 2022 (Hu, Cirit, Binaykiya and Hora). |
+| Problem | Give a fast, accurate arrival time for rides and deliveries, when the route a driver will take is not known in advance and different consumers need different kinds of error. |
+| Core idea | A routing engine produces a first ETA by summing segment times along the best path. A neural network predicts the residual between that ETA and the observed arrival time and adds it back. This is called post-processing. |
+| Model | DeeprETANet: every feature is turned into a discrete bin and embedded, one linear-attention layer learns feature interactions, and a decoder with a bias term per request type outputs the residual. Total 141.2 million parameters, 0.5 million outside the embeddings *(source-confirmed)*. |
+| Loss | An asymmetric Huber loss with two parameters, delta for robustness to outliers and omega for how much more underprediction costs than overprediction. The paper publishes neither value *(source-confirmed)*. |
+| Latency | Median 3.25 ms and 95th percentile 4 ms in production. The blog sets the requirement at a few milliseconds at most *(source-confirmed)*. |
+| Results | Against the routing engine ETA, MAE improves 7.83% (Table 2). Against the production XGBoost model in a two-week online test, MAE improves 2.91% for delivery and 2.66% for rides (Table 7) *(source-confirmed)*. |
+| Not published | The values of delta and omega, the number of features, the latency budget the 3.25 ms sits in, and the production request rate. |
+| First to break | Serving time and embedding memory, not arithmetic. The dense part of the model is about 0.5 million weights. |
+| Easy-to-miss traps | Two parameter figures in the sources do not agree. By multiply-add counts the quadratic attention the paper dropped is small. Hashing helped here after the CTR paper rejected it. The 4-city table is a share of training data, not the request rate. |
+| Practice PDFs | [Study edition](../../capstone-study-and-mock/uber-eta-prediction/capstone7_uber_eta_prediction_study.pdf) · [Mock interview](../../capstone-study-and-mock/uber-eta-prediction/capstone7_uber_eta_prediction_mock.pdf) |
 
-**Scope note:** This capstone covers the **ETA post-processing / correction layer** — the machine-learned model that refines an estimate it is handed. It explicitly does **not** cover the **routing engine** (also called a route planner) itself: the graph-search system that divides the road network into segments, runs a shortest-path algorithm (the paper names Dijkstra's algorithm) to find the best route, and sums each segment's expected traversal time to produce a first-pass ETA **(paper)**. That system is treated here as a given, already-built, deterministic input, exactly matching this capstone's own system boundary.
+Evidence labels used below: *(source-confirmed)* means the figure or claim is in the paper or the blog post. *(illustrative)* means it is this document's planning assumption. The model is called DeepETA in the blog and DeeprETA in the paper, and the two describe one system.
+
+### Concepts this case study builds on
+
+| Concept | Where it is taught | One-line recap |
+|---|---|---|
+| Back-of-envelope estimation and latency numbers | [Lesson 7, Concept 4](../../lessons/lesson-7-application-architecture-and-security.md#concept-4-back-of-envelope-estimation-technique--latency-numbers) | State assumptions, convert to rates and sizes, find the binding resource. |
+| Transformers and attention | [Lesson 1, Group B](../../lessons/lesson-1-ai-fundamentals-refresher.md#b-serving-and-running-models) | Weigh how much each item should attend to every other one. |
+| Residual and base estimate | [Glossary](../../appendix/glossary.md) | Predict the gap between a base estimate and the truth, and add it back. |
+| Feature hashing | [Capstone #2](../ctr-prediction/README.md) | Map a feature value to a bucket with a hash function. |
 
 ---
 
 ## Step 1: Clarify Requirements & Frame the ML/AI Objective
 
-**The actual objective, in the paper's own notation.** The routing engine produces what the paper calls the **RE-ETA** (routing engine ETA): a trip's recommended route is a sequence of road segments, and RE-ETA is calculated by summing the expected traversal time of each segment along that route **(paper)**. The paper is explicit about why this isn't the end of the story: *"the objective of RE-ETA is [to] find the best path, which is different from estimating an end-to-end ETA. The prediction accuracy is not the best due to re-routing and noisy data"* **(paper)** — this document reports that sentence as a direct quote, verified character-for-character against the paper's own raw text. In other words, the routing engine optimizes for route quality, and the travel-time estimate it produces along the way is a byproduct, not a design goal. DeeprETA's job is to take that RE-ETA, plus a set of features describing the trip, and predict the gap between RE-ETA and what actually happens: a **residual** (defined in full in Step 3's Sidebar below) that gets added back on top of RE-ETA to produce the final, corrected ETA.
+### The setting
 
-**What counts as ground truth / feedback signal.** The **ATA** (actual time of arrival) — the observed elapsed time between a trip's start and its completion — is the label. Every completed trip produces one ATA for free, the same "labels arrive as a byproduct of the product being used" structural advantage capstone #2's CTR-prediction system has over hand-labeled systems: no human has to annotate a trip to produce a training example.
+A routing engine, also called a route planner, divides the road network into small segments, finds the best path with a shortest-path algorithm, and adds up the segment times to get an ETA. It uses real-time traffic, accidents and weather for each segment. The paper lists four ways such an ETA falls short *(source-confirmed)*:
 
-**Why this is worth solving at all — the business framing, confirmed directly.** The paper states: *"Due to the sheer volume of decisions informed by ETAs, reducing ETA error by even low single digit percentages unlocks tens of millions of dollars in value per year by increasing marketplace efficiency"* **(paper)**. ETAs aren't a cosmetic display feature — the paper's own abstract lists four concrete downstream consumers of this same number: Uber "uses ETAs to calculate fares, estimate pickup times, match riders to drivers, plan deliveries, and more" **(paper)**. A fare calculation, a driver-matching decision, and a delivery plan can each be thrown off by the same ETA being off by the same few seconds — why "low single digit percentage" error reductions compound into a large dollar figure across that volume of decisions.
+- Route uncertainty: the route a driver or courier will choose is not known in advance.
+- Human error: drivers make mistakes in difficult stretches, and a shortest-path algorithm cannot account for that.
+- Distribution shift: arrival times differ markedly between tasks, such as driving to a restaurant and driving to pick up a rider, even on the same shortest path.
+- Uncertainty estimation: fare estimation needs a mean ETA, while user-facing ETAs may need a set of quantiles or expectiles.
 
-**Scope breadth: both rides and deliveries.** The paper evaluates DeeprETA separately on **rides** (passenger pickup/dropoff ETAs) and **delivery** (Uber Eats courier ETAs) requests, and reports throughout that the two have "quite different distributions" **(paper)** — one shared correction architecture applied to two statistically distinct request types, not two separate systems.
+The routing engine's objective is the best path. The paper says that this differs from estimating an end-to-end ETA, and that its accuracy suffers from re-routing and noisy data. The ends of a trip add noise, for example a driver looking for parking. The routing engine ETA sidesteps this by estimating travel time between neighborhoods and not between the exact start and end points.
 
-**A tension worth naming now, because Step 4's loss function exists to resolve it.** The paper states directly that different downstream consumers need different error properties from the same model: *"when ETA is used for calculating fares, mean ETA error is important. While for evaluating delivery ETA requests, not only the mean absolute ETA error, but also the 95th quantile is important. Extreme ETA errors will result in bad user experiences"* **(paper)**. A model trained to optimize a single point estimate (e.g., minimize squared error, targeting the mean) isn't automatically well-suited to every consumer at once — the specific gap Step 4's asymmetric Huber loss is built to close, not an incidental detail.
+### Post-processing
 
-**Explicitly out of scope:**
-- The routing engine itself (per the Scope note above).
-- The auction/pricing logic that consumes the fare-relevant ETA downstream (a separate system, analogous to how capstone #2's CTR model excludes the ad auction that consumes its output).
-- Rider/driver matching logic beyond its use of an ETA number as one input.
+The paper's approach treats the routing engine ETA as a noisy estimate of the true arrival time and predicts the difference. The blog adds a practical reason: it is generally easier to take in new data sources and changing business requirements by updating the post-processing model than by refactoring the routing engine. The paper says the approach can sit on top of any routing engine. It was evaluated only with Uber's own.
 
-**Trade-offs considered:** Framing the objective as "correct RE-ETA's residual" rather than "predict ATA from scratch, ignoring RE-ETA" is itself the central modeling choice this entire capstone is built around — Step 4 states that trade-off explicitly once the architecture is on the table. At the requirements stage specifically, the trade-off is narrower: committing to a single shared architecture for both rides and delivery, despite their confirmed "quite different distributions" **(paper)**, costs some per-request-type specialization that two fully separate models could exploit, but buys one unified training/serving pipeline instead of two — the paper's own calibration mechanism (Step 4) is the specific device that lets one shared architecture still adjust for those per-type distributional differences without forking the whole system.
+### Ground truth
+
+The label is the actual time of arrival (ATA). Its definition depends on the request type. For a pickup, it is the time from the driver accepting the request to the start of the ride or delivery trip. For a drop-off, it is the time from the start of the trip to its end. Every completed trip yields a label.
+
+### Why it matters
+
+The paper says that, because of the volume of decisions informed by ETAs, reducing error by low single-digit percentages unlocks tens of millions of dollars a year by improving marketplace efficiency. Uber uses ETAs to calculate fares, estimate pickup times, match riders to drivers and plan deliveries.
+
+### Different consumers, different errors
+
+For fares the mean error matters. For delivery ETAs, the paper says the mean absolute error and the 95th percentile both matter, because extreme errors give a bad experience. A single point estimate cannot serve every use, which is why the loss has two parameters (Step 4). Rides and deliveries have quite different distributions, and one shared model serves both.
+
+### Out of scope
+
+- The routing engine, taken as an input.
+- The pricing and matching systems that consume the ETA.
+
+### Trade-offs considered
+
+One shared model for rides and deliveries gives one training and serving pipeline and gives up some specialization. A bias term per request type recovers part of it.
 
 ---
 
 ## Step 2: Back-of-Envelope Constraints
 
-**Confirmed request volume, directly from the paper.** *"Ride-hailing platforms, like Uber, has billion-level requests to process on a weekly basis"* **(paper)** — a direct quote, not a derived figure. The paper gives no more precise number than this, and separately confirms this is no small corner of Uber's infrastructure: *"This post-processing system has the highest QPS at Uber"* **(paper)** — i.e., among every service Uber runs, this ETA-correction model's query volume is the largest.
+### What the sources say
 
-**An illustrative average-QPS calculation, anchored inside that confirmed "billion-level" range.** Taking a representative point estimate of 2 billion requests/week (illustrative — chosen to sit inside the paper's own confirmed "billion-level" order of magnitude, not a number the paper states):
+The paper says that a ride-hailing platform like Uber has billion-level requests to process on a weekly basis, and that this post-processing system has the highest QPS at Uber. No exact rate is given.
 
-```
-average_qps = 2,000,000,000 requests/week ÷ (7 days × 86,400 s/day)
-            = 2,000,000,000 ÷ 604,800
-            ≈ 3,307 requests/sec, averaged across the week
-```
+### The training data gives a second anchor
 
-Request traffic is not flat across a week — ride-hailing and delivery demand both spike hard around commute hours and meal times. Applying an illustrative peak-to-average ratio of 4x (higher than capstone #2's 3x search-traffic ratio, because rides/delivery demand concentrates far more sharply around specific hours of the day than globally-distributed search queries do):
+The paper's dataset covers September 13 to October 1, 2021, split sequentially: 14 days for training and validation (90% and 10%) and 7 days for testing. The training data has approximately 1.4 billion ETA requests. Requests with a travel time over 2 hours were removed *(source-confirmed)*. If those are all requests in the window:
 
-```
-peak_qps (illustrative) ≈ 3,307 × 4 ≈ 13,228 requests/sec at peak
+```text
+1,400,000,000 ÷ (14 × 86,400) = about 1,160 requests a second
 ```
 
-This illustrative peak-QPS figure is this document's own derivation from the paper's qualitative "billion-level/weekly" and "highest QPS at Uber" statements — not a number the paper itself states — kept visibly separate from the paper's own confirmed figures, the same discipline capstone #6 (PYMK) and capstone #2 (CTR) apply to their own illustrative scale anchors.
+The paper does not say whether the data is a sample, so this is a lower bound on the production rate. It also implies fewer than a billion requests a week, so either the data is a sample or "billion-level" is loose. An alternative anchor is 2 billion requests a week *(illustrative)*:
 
-**The real, paper-confirmed latency numbers — and why they're the actual constraint that shapes Step 4's architecture choice.** The paper reports, from its own production shadow testing: *"The median latency is 3.25ms and the 95th percentile is 4ms"* **(paper)**, and separately, the blog states the latency requirement that drove the move to deep learning in the first place: the model had to return an ETA within a few milliseconds at most **(blog, character-verified via Wayback Machine snapshot — reported as a paraphrase, never in quotation marks, per this document's standing quote-fidelity rule, even though the underlying wording is confirmed exact)**.
+```text
+2,000,000,000 ÷ 604,800 = about 3,300 a second on average
+at an assumed peak ratio of 4: about 13,200 a second
+```
 
-A ~3-4ms model-inference latency is roughly two orders of magnitude tighter than this repo's own already-established latency reference points for serving an LLM request — capstone #10 (`case-studies/llm-inference-serving`) Step 1 sets a p50/p99 time-to-first-token target of <200ms/<1.5s (per `appendix/glossary.md`'s latency-numbers table). That gap isn't a coincidence of two unrelated systems — it reflects where each number sits in its own request's critical path:
-- **Capstone #10's <200ms/<1.5s** is itself the *entire* user-facing latency budget for a chat response.
-- **DeepETA's 3-4ms** sits *inside* a single step of a larger request (a fare quote, a pickup estimate) that has its own, larger total latency budget — the ETA call can only consume a small slice of it.
+The four cities in Table 5 add up to 71.8 million delivery and 480.2 million ride requests in the training data, 552 million in all, about 39% of the 1.4 billion. That table is a share of training data and not a request rate.
 
-That difference is exactly why Step 4 rules out the full, quadratic-cost Transformer self-attention mechanism in favor of a linear variant (detailed below): a few milliseconds is the entire budget this specific model gets, not a generous allowance.
+### Latency
 
-**Trade-offs considered:** Relying on the paper's own qualitative "billion-level/weekly" and "highest QPS at Uber" statements, rather than inventing a precise-sounding exact figure, keeps this document honest about what's actually confirmed — the cost is that this capstone's QPS arithmetic leans on an illustrative anchor the way capstone #6's PYMK traversal-cost estimate does, rather than a paper-stated exact number the way capstone #1's Pinterest paper gives ("over 600 million visual searches per month"). Treating the 3.25ms/4ms figures as a hard, non-negotiable constraint (rather than a nice-to-have) is itself a modeling trade-off worth naming now: it rules out architectures that would otherwise be more accurate but too slow — the exact choice Step 4 makes explicit between the original quadratic-cost Transformer self-attention and a linear-cost substitute.
+In production the median latency was 3.25 ms and the 95th percentile 4 ms, and the latency was stable across different loads (Figure 8, shown as a chart). The blog says the model must return an ETA within a few milliseconds at most. The paper does not say what total budget this sits inside.
+
+### What a request costs
+
+DeeprETANet has 141.2 million parameters, of which 0.5 million are outside the embeddings (Table 4). In float32 *(assumed)*, the model is 565 MB. The dense part is small:
+
+```text
+0.5 million weights = about 1 million FLOPs per request
+at an assumed 20 billion FLOPs a second per core = about 0.05 ms
+```
+
+So most of the 3.25 ms is not the dense arithmetic. It is feature assembly, the call to the prediction service and queueing, which is this document's reading and is not stated in the sources.
+
+### Sizing the fleet
+
+By Little's law, requests in flight equal the rate times the time each takes. The paper says servers have 4 cores each. At the illustrative peak of 13,200 a second and 3.25 ms:
+
+```text
+requests in flight = 13,200 × 0.00325 = about 43
+hosts at full use  = 43 ÷ 4 cores = about 11
+hosts at 30% use   = about 36
+```
+
+Each ETA call may come from several model calls per user request, which would multiply this *(illustrative)*.
+
+### Two parameter figures that disagree
+
+The blog says any one prediction touches only roughly 0.25% of the model's parameters. Table 4 says 0.5 million parameters are outside the embeddings, which is 0.35% of 141.2 million. A prediction cannot touch less than the dense part. The two statements may describe different model configurations, and neither source reconciles them.
+
+### Trade-offs considered
+
+The qualitative scale is the load-bearing fact, and the rate is an assumption. Treating the latency as a hard bound rules out a mixture-of-experts head and a multi-head output, which the paper says it tried and found too slow.
 
 ---
 
 ## Step 3: Data / Knowledge Pipeline
 
-### Sidebar — Residual and base estimate
+### Sidebar: residual and base estimate
 
-*(This concept has no existing Lesson 1–9 home — it's the AI-native pattern that is this capstone's central teaching point, with no classic-infra or AI-fundamentals lesson already covering it.)*
+A base estimate is an existing prediction from a separate system, here the routing engine ETA. A residual is the difference between what happened and that estimate:
 
-- **Why?** A routing engine's RE-ETA is already a reasonable estimate most of the time — it's built from real map data, real-time traffic, and a well-understood shortest-path algorithm. Throwing that estimate away and training a model to predict ATA from raw features alone would mean re-learning everything the routing engine already gets right (road network structure, basic traffic patterns) from scratch, using the exact same training data that could instead be spent learning only what the routing engine gets *wrong*.
-- **What?** A **base estimate** is an existing, already-computed prediction from a separate (often simpler, often non-ML) system — here, RE-ETA. A **residual**, in this context, is the signed difference between what actually happened and what the base estimate predicted would happen: `residual = ATA − RE-ETA`. Rather than training a model to predict ATA directly, the model is trained to predict this residual, which is then added back onto the base estimate at serving time: `final ETA = RE-ETA + predicted residual`. The paper's own version of this equation, in its notation, defines the final prediction as RE-ETA plus a learned correction term that is itself a function of the request's features and RE-ETA **(paper)**.
-- **How?** Training examples pair each trip's RE-ETA (recorded at request time) with its eventual ATA (recorded once the trip completes); the label is their difference, not ATA itself. The paper's own diagnosis of *why* this gap isn't just noise: RE-ETA accuracy "is not the best due to re-routing and noisy data" **(paper)** — a driver takes a different route than recommended, traffic shifts mid-trip, or the map data is stale. The model's job is learning the pattern in *when and how much* RE-ETA errs, not re-deriving travel time from first principles.
+```text
+residual = ATA − RE-ETA        final ETA = RE-ETA + predicted residual
+```
+
+The paper writes the final estimate as the routing engine ETA plus a residual that is a function of the request and that ETA. Predicting only the gap means the model does not have to relearn road structure and basic traffic that the routing engine already captures. The paper notes that the RE-ETA and its residual are both skewed with long tails.
 
 ```mermaid
 flowchart LR
-    ATA["ATA\nactual time of arrival"] --> SUB["residual = ATA - RE-ETA"]
-    RE["RE-ETA\nrouting engine estimate"] --> SUB
-    SUB --> TRAIN["Training label\n(residual, not ATA)"]
-    TRAIN -. "serving time" .-> ADD["final ETA = RE-ETA + predicted residual"]
+    ATA["ATA"] --> SUB["residual = ATA − RE-ETA"]
+    RE["RE-ETA"] --> SUB
+    SUB --> TRAIN["Training label"]
+    TRAIN -.-> ADD["Serving: RE-ETA + predicted residual"]
 ```
 
-**The features that predict the residual (paper).** The paper names exactly three official feature categories, confirmed directly against its Section 4.1, plus a separate geospatial subsection:
+### Raw features
 
-- **Continuous features** (e.g., speed) — **bucketized into quantiles before being embedded**. The paper reports *"speed is bucketized into 256 quantiles"* **(paper)**, and separately confirms that quantile buckets measurably beat equal-width buckets for this purpose **(paper)**.
-- **Categorical features** — embedded directly via a lookup table.
-- **Calibration features** — per-segment indicators that "convey different segments of the trip population such as whether it is a delivery drop-off or ride-sharing pick-up trip" **(paper)**; these feed the calibration layer (Step 4) to adjust for mean-shift differences across request types, rather than being routed through the embedding module the way continuous/categorical features are.
-- **Geospatial features** (origin/destination coordinates) — **not** a fourth member of the three-category list above. The paper covers these in their own dedicated subsection (Section 4.2, Embedding Module, with geohashing detailed further in 4.2.1): transformed via **geohashing** combined with **multiple feature hashing** at several resolutions (resolution levels `u ∈ {4, 5, 6, 7}`, each a different granularity of geographic grid cell) **(paper)**. This document keeps that distinction explicit rather than implying geospatial is the three-category list's third (or fourth) item.
+Table 1 of the paper lists the raw features in one ping *(source-confirmed)*:
 
-Geohashing/feature hashing here is a geospatial-specific elaboration of the same **feature hashing** technique already defined in this repo's glossary for capstone #2 (mapping a high-cardinality feature to a fixed, bounded set of buckets via a hash function) — this document links to that existing entry rather than re-deriving the hashing trick itself, and does not add a second glossary entry for what is the same core idea applied to a new feature type.
+| Group | Examples |
+|---|---|
+| Temporal | minute of day, day of week |
+| Geospatial | latitude and longitude of the begin and end locations |
+| Trip | trip type, route type, request type, routing engine ETA, estimated distances |
+| Traffic | real-time and historical speed |
+| Context | country, region and city IDs |
 
-**A numeric illustration: how much does bucketizing actually compress a continuous feature?** Speed, stored as a raw floating-point value (say, a 32-bit float, 4 bytes), bucketized into 256 quantiles needs only `log2(256) = 8` bits — one byte — to represent which bucket a given speed value falls into:
+The paper says the spatial and temporal features are the most important.
 
+### Discretize everything
+
+All features are pre-processed into discrete bins before the embedding module. The paper found that discretizing and embedding all features gave a significant accuracy lift over using continuous features directly.
+
+- Categorical features are looked up in an embedding table. Minute of week has a vocabulary of 10,080 and an embedding size of 8, which is 80,640 parameters.
+- Continuous features go through a quantile bucketizing function and then an embedding table. Speed is bucketized into 256 quantiles, which led to better accuracy than using speed directly.
+- Quantile buckets beat equal-width buckets. The explanation offered: for any fixed number of buckets, quantile buckets convey the most information in bits about the original value. The blog adds that a network with bucketized features does not spend parameters learning to partition the input space.
+
+### Geospatial features
+
+Locations are mapped to geohashes at several resolutions, with u in 4, 5, 6 and 7. A geohash of length u carries 5u bits, so the number of grid cells grows exponentially:
+
+```text
+u = 4: 2^20 =          1,048,576 cells
+u = 5: 2^25 =         33,554,432
+u = 6: 2^30 =      1,073,741,824
+u = 7: 2^35 =     34,359,738,368
 ```
-raw_float_storage_per_value   = 4 bytes   (32-bit float)
-bucketized_storage_per_value  = 1 byte    (256 buckets => 8 bits => fits in 1 byte)
 
-compression_ratio = 4 / 1 = 4x smaller, before the bucket index is even embedded
-```
+The paper tried exact indexing, one embedding per cell, which takes the most space. It chose multiple feature hashing: each cell is mapped to bins by two independent hash functions (MurmurHash3 with different seeds), and each bin has its own embedding. The origin, the destination and the pair are hashed separately, at every resolution. Using several resolutions helps with the sparsity of the finest grid.
 
-This illustrative calculation isn't a figure either source states — it shows *why* bucketizing is a meaningful engineering choice even before its reported accuracy benefit: it turns an unbounded continuous value into a small, fixed-size integer indexing directly into an embedding table, the same mechanical shape as a categorical feature lookup.
+### The result goes against the CTR paper
 
-**Training data scale (paper, Table 5).** The paper reports exact training-data row counts by city and request type, in millions of requests: New York City (Delivery 19.94M, Rides 138.62M), Los Angeles (Delivery 17.46M, Rides 58.32M), London (Delivery 18.33M, Rides 102.84M), and Mexico City (Delivery 16.11M, Rides 180.39M) **(paper)** — real, paper-stated figures, not illustrative ones, usable directly rather than needing an illustrative anchor the way Step 2's QPS figure does.
+In the ablation, removing feature hashing, which means indexing the geohash string directly, lowered MAE improvement from 7.83% to 7.41%. The blog says that single-hash feature hashing saved space with the same or slightly worse accuracy, and that multiple hashing gave the best accuracy and latency while still saving space. The network can combine independent buckets to undo the harm of a single collision. The [CTR case study](../ctr-prediction/README.md) reports that Google rejected hashing for its own features. Both can be true: the right choice depends on how sparse the data is and whether sharing statistics between rare cells helps.
 
-**What happens when the data is wrong or stale.** The paper's own stated cause of RE-ETA error — re-routing (the driver's actual path diverges from the routing engine's recommended path) and noisy data **(paper)** — is itself the source of the residual distribution the model has to learn. The paper confirms this distribution is skewed with long tails **(paper)**, which is exactly why a plain squared-error loss (sensitive to outliers) is a poor fit and motivates Step 4's choice of a Huber-based loss instead. Separately: the model is retrained on a fixed cadence — *"We retrain and validate the model performance weekly using an auto retraining workflow"* **(paper)** — which bounds how long a shift in real-world driving patterns (a new road closure, a seasonal traffic change) can go uncorrected by retraining before the next cycle picks it up.
+### Training data and retraining
 
-**Trade-offs considered:** Training on the residual rather than on ATA directly means the model's accuracy is entangled with RE-ETA's own accuracy by construction — if RE-ETA systematically changes (a routing-engine update, a new map-data source), the residual's learned distribution shifts too, and the correction model needs retraining to stay calibrated to the new base estimate, a coupling cost Step 5 returns to. But the alternative — training a model to predict ATA directly from raw trip features, with no RE-ETA input at all — would require the model to re-learn, from scratch, everything the routing engine's graph search and real-time traffic data already encode well, spending model capacity and training data on relearning the easy 90% of the problem instead of concentrating on the harder residual. Bucketizing continuous features costs some precision (two nearby speed values that fall in the same bucket become indistinguishable to the model) in exchange for a bounded, embeddable representation and — per the paper's own reported result — better measured accuracy than feeding the raw continuous value in directly, a genuinely counter-intuitive finding worth stating as a confirmed result rather than an assumption.
+Table 5 gives requests by city and type, in millions:
+
+| City | Delivery | Rides |
+|---|---|---|
+| New York City | 19.94 | 138.62 |
+| Los Angeles | 17.46 | 58.32 |
+| London | 18.33 | 102.84 |
+| Mexico City | 16.11 | 180.39 |
+
+The model is retrained and validated weekly with an automatic workflow. The blog lists continuous, incremental training on fresher data as future work.
+
+### Trade-offs considered
+
+Training on the residual ties the model to the routing engine. If the routing engine changes, the residual distribution changes and the model needs retraining. Bucketizing loses precision inside a bucket and gains a fixed-size embeddable form.
 
 ---
 
 ## Step 4: Model/Agent Core Design
 
-This is this capstone's central teaching point, confirmed from the paper's own architecture description: **predicting the residual rather than the absolute arrival time**, and the specific neural architecture built to do it.
+### The architecture
 
-### The architecture: DeeprETANet
-
-**Two modules (paper).** *"DeeprETANet consists of two modules: an Embedding module and a Two-layer Module"* **(paper)** — embedding converts Step 3's three feature categories into dense vectors (diagrammed below); the **Two-layer Module** is described directly: *"The DeeprETANet is a wide and shallow network with only two layers besides of the embedding layer. The first layer is a linear transformer layer and the second layer is a fully connected layer with calibration"* **(paper)**.
+DeeprETANet has an embedding module and a two-layer module. The paper calls it a wide and shallow network with two layers besides the embeddings: a linear transformer layer, and a fully connected layer with calibration. The blog says the team tried 7 architectures: MLP, NODE, TabNet, sparsely gated mixture of experts, HyperNetworks, a Transformer and a linear Transformer. An encoder-decoder with self-attention gave the best accuracy.
 
 ```mermaid
 flowchart TB
-    CF["Continuous features\n(bucketized, e.g. speed -> 256 quantiles)"] --> EMB["Embedding module"]
+    CF["Continuous features\nquantile bins"] --> EMB["Embedding module"]
     CAT["Categorical features"] --> EMB
-    GEO["Geospatial features\ngeohash u in {4,5,6,7} + feature hashing"] --> EMB
-    EMB --> ATT["Layer 1: linear self-attention\n(no positional encoding, O(L) not O(L^2))"]
-    CAL["Calibration features\n(request type: rides/delivery/pickup/dropoff)"] --> FC
-    ATT --> FC["Layer 2: fully connected + calibration layer"]
-    FC --> RESID["Predicted residual"]
+    GEO["Geospatial features\ngeohash + multiple hashing"] --> EMB
+    EMB --> ATT["Linear self-attention\nno positional encoding"]
+    ATT --> FC["Fully connected layer"]
+    TYPE["Request type"] --> CALB["Bias per request type"]
+    FC --> RES["Predicted residual"]
+    CALB --> RES
+    RES --> OUT["ReLU and clamp"]
 ```
 
-### Sidebar — Self-attention over tabular features, without positional encoding
+### Sidebar: self-attention over features
 
-*(Builds directly on Lesson 1's existing generic transformer/attention definition — "the neural network architecture... which processes a sequence by weighing how much each token should 'attend to' every other token," per Lesson 1's KV-cache Concept — rather than re-deriving self-attention from scratch; this Sidebar names only the specific, novel twist DeeprETA applies to that generic mechanism, which has no existing Lesson 1–9 home.)*
+In a language model each vector is a word token. Here each vector is one feature, such as the origin or the time of day. Self-attention learns interactions between features, so the model can scale the importance of distance given the time, the place and the traffic. Feature order carries no meaning, so there is no positional encoding.
 
-- **Why?** A trip's ETA depends on *interactions* between its features, not just each feature in isolation — how much a traffic-condition feature matters depends on the time of day and the distance of the trip, for instance. Self-attention is a mechanism already built to learn exactly this kind of pairwise feature interaction, originally designed for sequences of word tokens in language models.
-- **What?** The paper repurposes self-attention for a setting with no sequence at all: *"In a language model, each vector represents a single word token, but in the case of travel time estimation, each vector represents a single feature"* **(paper)**. Each of a trip's features (time, origin/destination location, traffic condition, distance, etc.) becomes one vector fed into the same self-attention computation a language model would run over a sentence's word embeddings — but the *features* are the "tokens," not words.
-- **How?** Because there's no inherent order to a bag of features — swapping which position "time of day" sits in versus "distance" doesn't change what those features mean — the paper states: *"Unlike the sequence-to-sequence prediction, the order of the vector does not matter in our case, as the order of the input features does not make a difference. Therefore, we do not include the positional encoding in our design"* **(paper)**. **Positional encoding** — in a standard Transformer, information injected into each token's embedding that tells the model where that token sits in the sequence, necessary because a language model's meaning genuinely depends on word order — is dropped entirely here, because feature order carries no such meaning. This is the one explicit architectural way the paper's own repurposing of self-attention actually departs from a standard sequence-model Transformer, a design choice as clearly attributable to the feature-vector-not-word-token framing as the positional encoding itself.
-- **The latency-driven twist: linear self-attention, not standard self-attention.** The paper confirms it originally tried the standard Transformer self-attention mechanism, which computes a full `L×L` attention matrix of pairwise dot products across all `L` input features **(paper)** — but that *"the original transformer layer provided good accuracy, it was too slow to meet the latency requirements for online real-time serving"* **(paper)**, because that `L×L` computation has quadratic time complexity in the number of features. The paper's fix: linear self-attention (Katharopoulos et al. 2020), which avoids ever materializing the full `L×L` matrix and instead computes feature interactions in time linear in `L` **(paper)**. A direct, confirmed instance of Step 2's latency constraint overriding the more capable architecture.
+The paper first tried the original Transformer attention, which computes an L by L matrix of pairwise dot products for L features. It gave good accuracy and was too slow for online serving. It switched to the linear transformer, whose cost grows with L times d squared, against L squared times d, where d is the embedding dimension. Linear attention is much faster when L is much larger than d.
 
-**The calibration layer — reconciling one shared model across rides/delivery/pickup/dropoff (paper).** The second layer of the Two-layer Module is "a fully connected layer with calibration," and the paper is explicit about its purpose: *"The second calibration layer aims to adjust bias from various request types"* **(paper)**, implemented as a learned per-request-type bias term added on top of the interaction layer's output, so that *"we can adjust the raw prediction by accounting for mean-shift differences across request types"* **(paper)**. This is the concrete mechanism that resolves Step 1's open question of how one shared architecture still adapts to rides vs. delivery's "quite different distributions" without forking into two separate models.
-
-**The training loss — resolving Step 1's mean-vs-p95 tension directly.** The paper states the problem plainly: *"optimizing for a single point estimate is not ideal"* given that fares care about mean error while delivery ETAs also care about the 95th percentile **(paper)**. The fix is a customized **asymmetric Huber loss**, with two tunable parameters: `δ` (delta), controlling robustness to outliers by smoothly interpolating between squared error and absolute error, and `ω` (omega), controlling the relative weight applied to underprediction vs. overprediction **(paper)**. The paper names the business reason for the asymmetry directly: *"being a minute late is worse than being a minute early in ETA predictions"* **(paper)** — a late arrival estimate that turns out optimistic (the actual trip takes longer) costs more in user trust than a conservative estimate that turns out pessimistic, so the loss function is deliberately built to penalize underprediction (predicting too fast an arrival) more heavily than overprediction, rather than treating both directions of error as equally costly the way a plain symmetric loss would.
-
-### The central trade-off: predict the residual vs. predict the absolute value, stated explicitly
-
-This is the trade-off that is this capstone's whole point, and it deserves to be stated on its own rather than folded into a generic callout.
-
-**The case for correcting a deterministic base estimate rather than replacing it:**
-- **Interpretability.** A residual is a small, bounded correction with an intuitive meaning ("the routing engine said 14 minutes; the model thinks it's running about 2 minutes behind reality today") — easier for an engineer debugging a bad prediction to reason about than an opaque end-to-end ATA prediction with no reference point to compare against.
-- **Fallback safety.** Because the final prediction is `RE-ETA + residual`, RE-ETA alone remains a usable number — if the residual model fails or isn't deployed yet for some request type, the system can fall back to it and still produce a sane answer. (This fallback behavior is this document's own inference from the architecture — the paper doesn't itself describe an explicit fallback mechanism or outage behavior.)
-- **Focused learning capacity.** The model only has to learn where and why RE-ETA tends to be wrong, not relearn road-network structure and basic travel-time physics the routing engine already encodes — the same "spend capacity on the hard residual, not the easy 90%" argument made in Step 3.
-
-**The case for a model that predicts the absolute value end to end instead:**
-- A model with no structural dependence on RE-ETA's own framing is, in principle, free to learn patterns RE-ETA's segment-sum approach can't represent at all — e.g., systematic biases in how segments combine that aren't visible to any one segment's own traversal-time estimate.
-- It removes the coupling cost named in Step 3: no need to retrain every time the routing engine's own methodology changes, since there's no RE-ETA input to stay calibrated against.
-- The paper's own confirmed comparison gives this trade-off its sharpest real evidence: Table 2's baseline comparison (Step 6) includes **XGBoost**, **ResNet**, and **HammockNet**, all evaluated the same way DeeprETANet is — as regression models predicting *against* RE-ETA's own error, not as pure end-to-end predictors ignoring RE-ETA. The paper confirms the system that predated DeeprETA was *"a group of XGBoosts with each trained on one mega-region"* **(paper)** — Uber's prior production approach already made the same "correct RE-ETA" choice, just with gradient-boosted trees instead of a neural network. This capstone's real trade-off is therefore not "correct vs. replace RE-ETA" (both systems choose to correct) but **which model family does the correcting** (Step 4's comparison below), with the residual-correction framing held constant across it.
-
-**Why the GBDT-to-deep-learning move happened at all (blog, paraphrased — not independently character-verified):** per the blog, scaling the prior XGBoost approach to larger datasets and models became increasingly difficult, while deep learning scaled more easily via data-parallel stochastic gradient descent. This is reported as the blog's claimed motivation, not a paper-confirmed one — though it's consistent with (not proven by) the paper's own confirmed Table 2 comparison (Step 6) showing DeeprETANet's accuracy improvement over XGBoost.
-
-**A real parameter-count detail, from the paper's own ablation table (paper, Table 4).** DeeprETANet has roughly **141.2 million total parameters**, of which only about **0.5 million are non-embedding parameters** — the rest sit in embedding lookup tables (ResNet and HammockNet, evaluated as alternative architectures in the same experiment, have a similar split: 141.6M/1.2M and 140.8M/0.5M respectively) **(paper)**. This document's own derived figure from those paper-stated numbers:
-
-```
-non_embedding_fraction = 500,000 ÷ 141,200,000 ≈ 0.0035  →  about 0.35% of parameters
-
-embedding_fraction = 1 − 0.0035 ≈ 0.9965  →  over 99.6% of parameters live in embedding tables
+```text
+the blog's example: 40 features of dimension 8
+L^2 × d = 12,800 multiply-adds      L × d^2 = 2,560      5 times fewer
 ```
 
-This matters directly for Step 5: a model that's over 99.6% embedding-table weight, where each request looks up only a small slice of those tables (one row per categorical value, one per bucket actually hit), is a very different serving problem than one where most parameters are read on every inference — the numeric reason this architecture can meet a 3-4ms latency budget despite well over a hundred million total parameters.
+At an assumed 20 billion multiply-adds a second per core, 12,800 operations take under a microsecond. By operation count, standard attention at that size is not what makes a 3 ms model slow, and the dense layer is larger. The paper reports no timings that separate these costs. The slowdown may come from implementation overheads or from larger shapes than the blog's example, and the sources do not say. Treat the claim as the authors' finding and measure on your own shapes.
 
-**Trade-offs considered:** Choosing linear self-attention over standard self-attention trades away some theoretical representational capacity (the full `L×L` pairwise interaction matrix can represent patterns a linear approximation can't) for the latency headroom Step 2 identified as non-negotiable — a direct, confirmed instance of accuracy-vs-latency being resolved in latency's favor once the latency bound was treated as hard rather than soft. Dropping positional encoding is free in this specific feature-vector setting (there is no order to preserve), but it is a design choice that would be actively wrong if blindly copied into a genuinely sequential setting — a caution worth stating because it's exactly the kind of "copy the well-known architecture" mistake a less careful design would make. The asymmetric Huber loss's `ω` parameter lets the team dial in exactly how much more underprediction should cost than overprediction for a given downstream use case, but that dial has to be set by a human business judgment call (how much worse *is* a minute late than a minute early, precisely?) rather than learned from data — the model optimizes whatever asymmetry it's told to, not the "correct" asymmetry in some objective sense.
+### The calibration layer
+
+The decoder is a fully connected layer with bias parameters per request type. The bias comes from a linear layer over a one-hot encoding of the request type, and it adjusts the raw prediction for mean shifts between types. The paper tried two ways of handling heterogeneity, embedding the request type so that the interaction layer sees it, and the calibration layer, and also tried a multi-head structure and mixture of experts, which did not meet the latency requirement. The blog says the bias layer beat adding segment features to the model, and was chosen over a multi-task decoder for latency. Removing it lowered MAE improvement from 7.83% to 7.73%.
+
+### The loss
+
+The asymmetric Huber loss uses a base Huber loss with parameter delta: squared error for errors under delta, and a linear penalty beyond it. A second parameter omega weights errors by direction, omega on overprediction and one minus omega on underprediction. The paper says it lets the team tune the point estimate to business goals, where being a minute late is worse than being a minute early.
+
+With delta = 60 seconds and omega = 0.3 *(illustrative, since the paper gives no values)*, an error of 120 seconds costs:
+
+```text
+base loss = delta × error − delta^2 ÷ 2 = 60 × 120 − 1,800 = 5,400
+underprediction (arrival later than predicted): 0.7 × 5,400 = 3,780
+overprediction  (arrival earlier than predicted): 0.3 × 5,400 = 1,620      2.3 times less
+```
+
+Omega is a business judgment and the model optimizes whatever asymmetry it is given.
+
+### Offline results
+
+Table 2 reports relative improvement over the routing engine ETA, in percent:
+
+| Model | MAE | p50 | p95 |
+|---|---|---|---|
+| XGBoost | 5.07 | 1.79 | 5.98 |
+| ResNet | 7.39 | 6.19 | 7.27 |
+| HammockNet | 7.58 | 6.12 | 7.56 |
+| DeeprETANet | 7.83 | 6.25 | 7.99 |
+| without calibration | 7.73 | 6.12 | 7.85 |
+| without feature hashing | 7.41 | 5.10 | 7.99 |
+
+The relative improvement is the drop in mean absolute error divided by the routing engine's own. For example, with a routing engine MAE of 100 seconds *(illustrative)*, a 7.83% improvement gives 92.2 seconds. DeeprETANet has the lowest MAE and p50. For p95, the versions with and without hashing tie, which the paper reads as richer geospatial embeddings helping typical cases and not extreme errors.
+
+Table 3 splits DeeprETANet's gains by request type:
+
+| Type | MAE | p50 | p95 |
+|---|---|---|---|
+| Delivery | 7.46 | 2.26 | 11.05 |
+| Rides | 7.86 | 6.25 | 7.62 |
+
+Rides have much lower p50 error, and deliveries have much lower p95 error.
+
+### The baselines
+
+The XGBoost baseline is the group of XGBoost models, one per mega-region, that was the production ETA model before DeeprETA, with maximum depth 15, up to 250 trees and a learning rate of 0.1. ResNet had 4 residual blocks with hidden size 512. HammockNet used quantized one-hot inputs and two layers of sizes 800 and 100. DeeprETANet's linear transformer uses key, query and value dimensions of 4, and its fully connected layer has 2048 units. The paper does not say whether each baseline predicts the residual or the ETA directly. It reports all of them on the same improvement measure against the routing engine ETA.
+
+### Why not a single end-to-end model
+
+The paper does not compare against a model that ignores the routing engine, so the sources give no evidence either way on correcting versus replacing. The argument for correcting is practical: the base estimate keeps working if the model is absent, a residual is easier to debug, and the post-processing model is easier to update than the routing engine. The argument for replacing is that it removes the coupling to the routing engine's changes. Both are reasoning.
+
+### Trade-offs considered
+
+Linear attention gives up some capacity for speed on the authors' account. A discretized input gives a fixed-size lookup and loses precision within a bucket. A calibration bias is cheap and handles only mean shifts.
 
 ---
 
 ## Step 5: Serving Architecture
 
-**The real-time request path**, for a live ETA request (diagrammed below):
+### The request path
 
-1. The routing engine computes RE-ETA, independent of and prior to anything DeeprETA does.
-2. A feature vector is assembled (continuous/bucketized, categorical, calibration features, plus RE-ETA itself).
-3. DeeprETANet infers a predicted residual, within the paper's own measured median latency of 3.25ms (95th percentile 4ms) **(paper)**.
-4. The residual is added onto RE-ETA, then passed through a clamp and a `ReLU` (an activation function computing `max(0, x)`), specifically "to force predicted ETA to be positive and clamping to reduce the effect of extreme values" **(paper)** — guarding against a nonsensical negative or wildly out-of-range final ETA.
-5. The corrected ETA is returned to whichever consumer requested it.
+The blog describes the serving path *(source-confirmed)*: consumer requests are routed through various services to the uRoute service, the front end for all routing lookups. It asks the routing engine for route lines and ETAs, then uses that ETA and other model features to call the Michelangelo online prediction service for the DeepETA model. Periodic auto-retraining workflows retrain and validate the model.
 
 ```mermaid
 flowchart LR
-    RE["Routing engine\nRE-ETA"] --> FV["Feature vector\ncontinuous + categorical + calibration"]
-    RE --> FV
-    FV --> NET["DeeprETANet inference\nmedian 3.25ms, p95 4ms"]
-    NET --> ADD["RE-ETA + predicted residual"]
-    ADD --> CLAMP["ReLU + clamp\nforce non-negative, bound extremes"]
-    CLAMP --> OUT["Corrected ETA"]
-    OUT --> CON["Consumer\nfare calc / pickup est. / driver-matching"]
+    REQ["Consumer request"] --> UR["uRoute service"]
+    UR --> RE["Routing engine\nroute and RE-ETA"]
+    RE --> UR
+    UR --> MP["Online prediction service\nDeepETA model"]
+    MP --> UR
+    UR --> OUT["Corrected ETA"]
 ```
 
-**An illustrative feature-vector schema**, built directly from the paper's own three confirmed feature categories (continuous/bucketized, categorical, calibration) and the RE-ETA base-estimate input, in the spirit of a real serving-time request payload — this document's own construction, not the team's actual (unpublished) schema:
+The model's raw output is the residual. It is added to the routing engine ETA, passed through a ReLU to force the ETA to be positive, and clamped to reduce the effect of extreme values.
 
 ```python
-# Illustrative DeeprETA-style feature vector for one ETA correction request.
-# Field groupings follow the paper's own three confirmed feature categories
-# (continuous/bucketized, categorical, calibration) plus the RE-ETA input
-# the residual is added back onto at the end.
-
-eta_correction_request = {
-    "request_id": "r_8f21a9",
-    "request_type": "rides_pickup",          # calibration feature (paper):
-                                              # "whether it is a delivery
-                                              # drop-off or ride-sharing
-                                              # pick-up trip"
-
-    "re_eta_seconds": 840,                   # base estimate from the routing
-                                              # engine -- summed segment-wise
-                                              # traversal time (paper)
-
-    "continuous_features": {
-        # Raw values are bucketized into quantiles before embedding (paper);
-        # this payload carries the already-bucketized index, not the raw float.
-        "speed_bucket": 193,                 # one of 256 quantile buckets (paper)
-        "trip_distance_bucket": 47,
-    },
-
-    "categorical_features": {
-        "time_of_day_bucket": "weekday_evening_peak",
-        "traffic_condition": "heavy",
-    },
-
-    "geospatial_features": {
-        # Multi-resolution geohash + multiple feature hashing (paper),
-        # one hashed bucket id per resolution level u in {4, 5, 6, 7}.
-        "origin_geohash_u4": 1022,
-        "origin_geohash_u7": 88193,
-        "dest_geohash_u4": 1301,
-        "dest_geohash_u7": 91440,
-    },
-}
-
-def apply_residual_correction(re_eta_seconds: float, predicted_residual: float) -> float:
-    """Combine the routing engine's base estimate with DeeprETA's learned
-    residual correction -- the serving-time version of Step 3's
-    `final ETA = RE-ETA + predicted residual` definition.
-
-    The ReLU-and-clamp step mirrors the paper's own stated output
-    post-processing: forcing the result positive and bounding extreme
-    values (paper, Section 4.3.2).
-    """
-    corrected = re_eta_seconds + predicted_residual
-    corrected = max(0.0, corrected)              # ReLU: force non-negative (paper)
-    MAX_PLAUSIBLE_ETA_SECONDS = 3 * 60 * 60      # illustrative clamp ceiling
-    return min(corrected, MAX_PLAUSIBLE_ETA_SECONDS)
+def final_eta(re_eta_seconds: float, residual: float, cap: float = 10_800.0) -> float:
+    return min(max(0.0, re_eta_seconds + residual), cap)   # ReLU, then clamp
 ```
 
-**Training/serving infrastructure (paper, diagrammed below).** Models retrain weekly via "an auto retraining workflow" **(paper)** on Nvidia Quadro RTX 5000 GPUs **(paper)**, then deploy to "servers with 4 cores per host" **(paper)** — a CPU-serving fleet, not GPU, consistent with per-request cost dominated by cheap embedding-table lookups rather than dense matrix multiplication.
+The cap of 3 hours is an illustrative choice.
 
-```mermaid
-flowchart LR
-    ATA["Completed trips\nnew ATA labels"] --> RT["Weekly auto-retraining\nworkflow"]
-    RT --> GPU["Train\nNvidia Quadro RTX 5000 GPUs"]
-    GPU --> DEPLOY["Deploy"]
-    DEPLOY --> FLEET["CPU serving fleet\n4 cores/host"]
-```
+### Training and serving hardware
 
-**Why embedding-table-dominated serving is cheap.** Step 4 established that over 99.6% of DeeprETANet's ~141 million parameters live in embedding tables. The blog gives two separate statements about why this doesn't blow the latency budget, kept distinct here rather than conflated into one claim:
+The paper trained on Nvidia Quadro RTX 5000 GPUs and ran its offline experiments on two of them. Production requests are served by a fleet of servers with 4 cores per host, with no GPU. A model that is 99% embedding lookups and about 0.5 million dense weights runs well on CPU.
 
-- **General claim:** most of the model's parameters exist in embedding lookup tables, so a given request only reads the handful of rows (one per categorical value, one per bucket hit) its features index into, never the full table.
-- **Geospatial-specific claim:** for mapping a trip's origin/destination coordinates to an embedding, the blog states that DeepETA quantizes the coordinates and performs a hash lookup, which runs in **O(1)** time — contrasted against the **O(log N)** time a tree-structured lookup would need, and the **O(N²)** time a fully-connected layer would need to learn the same mapping **(blog, character-verified via Wayback Machine snapshot)**. The O(1) figure is specific to this geospatial hash-lookup case, not a blanket claim about every embedding lookup in the model.
+### Why embedding lookups are cheap
 
-A 141-million-parameter model isn't loading all 141 million parameters' worth of compute onto every request; it's doing a small, fixed number of table/hash lookups plus two "wide and shallow" layers **(paper)** of real computation.
+The paper says that although the embeddings are 99% of the parameters, they contribute minimally to latency because an embedding table lookup takes constant time. The blog says that mapping a latitude and longitude takes a quantization and a hash lookup, O(1), against O(log N) for a tree and O(N^2) for fully connected layers learning the same mapping. Each prediction touches only the rows its features index into.
 
-**Trade-offs considered:** Making the residual model's serving path structurally dependent on first getting RE-ETA from the routing engine (step 1 of the real-time path above) couples the two systems' availability — if the routing engine is slow or fails, DeeprETA has no base estimate to correct, and the whole corrected-ETA pipeline is blocked, not just degraded. The alternative, computing both independently and merging only at the end, would decouple their failure modes but would also give up the one piece of information (RE-ETA itself) the residual model is specifically trained to use as its most important feature — not a trade worth making given RE-ETA is also needed on its own for route *display*, not just ETA correction, so the dependency already exists in the product regardless. Serving on a CPU fleet rather than GPUs is the right call given the embedding-table-dominated, latency-bound nature of this specific model, but it's a choice that would need revisiting if a future version of this architecture grew the non-embedding "wide and shallow" compute layers substantially — the paper's own measured 3.25ms/4ms latency is a property of *this* model's specific shape, not a guarantee that holds for any residual-correction architecture.
+### What the sources do not say
+
+- How features are assembled and fetched, or the latency budget of the whole ETA call.
+- What happens if the prediction service is down. A fallback to the routing engine ETA is possible and is this document's inference.
+- The request rate, or how many model calls one user request makes.
+
+### Decision table
+
+| Decision | This system's choice | Choose differently when |
+|---|---|---|
+| Base estimate | Routing engine ETA plus a learned residual | An end-to-end model if the base estimate is unreliable and the system can afford the coupling to retraining |
+| Features | Discretize and embed everything | Raw continuous values for a tiny model |
+| Geospatial encoding | Multi-resolution geohash with two independent hashes | Exact indexing if memory is plentiful and data per cell is dense |
+| Interaction layer | Linear self-attention | Standard attention if the measured cost fits the budget |
+| Heterogeneity | A bias per request type | A multi-head or expert model if latency allows |
+| Loss | Asymmetric Huber | A quantile loss if one quantile is the only target |
+| Serving | CPU hosts with 4 cores | GPU if the dense part grows a lot |
+
+### Trade-offs considered
+
+The model needs the routing engine ETA first, so its availability depends on the routing engine. That dependency exists anyway because the route is shown to the user. CPU serving fits this model and would be revisited if the dense layers grew.
 
 ---
 
-## Step 6: Evaluation, Monitoring, and Iteration
+## Step 6: Evaluation, Monitoring and Iteration
 
-**Offline evaluation metrics (paper).** Three metrics, all computed as *relative improvement over RE-ETA's own error* (per the paper's Equation 15): **mean absolute error (MAE)**, **50th-percentile absolute error (p50)**, and **95th-percentile absolute error (p95)** — the same mean/p50/p95 split Step 1 named as the reason a single point-estimate loss wasn't sufficient. The paper's offline comparison table (Table 2), relative MAE/p50/p95 improvement over RE-ETA error, in percent:
+### Metrics
 
-| Model | MAE improvement | p50 improvement | p95 improvement |
+The paper uses mean absolute error (MAE), the 50th percentile absolute error and the 95th percentile absolute error, each as a relative improvement over the routing engine ETA. For latency it uses offline batch inference time to pre-screen models and an online test of latency, queries per second and CPU use.
+
+### Online shadow tests
+
+Shadow experiments ran globally for 2 weeks. The launch criterion was to improve ETA accuracy over the online XGBoost model, measured by MAE, p50 and p95 across mega-regions. Table 7 reports improvement over XGBoost, aggregated from multiple launches:
+
+| Type | MAE | p50 | p95 |
 |---|---|---|---|
-| XGBoost | 5.07% | 1.79% | 5.98% |
-| ResNet | 7.39% | 6.19% | 7.27% |
-| HammockNet | 7.58% | 6.12% | 7.56% |
-| **DeeprETANet** | **7.83%** | **6.25%** | **7.99%** |
-| DeeprETANet, w/o calibration | 7.73% | 6.12% | 7.85% |
-| DeeprETANet, w/o feature hashing | 7.41% | 5.10% | 7.99% |
+| Delivery | 2.91 | 4.74 | 3.92 |
+| Rides | 2.66 | 4.15 | 3.23 |
 
-**(paper, Table 2)** — DeeprETANet achieves the best MAE and p50 improvement of the four full models; the ablations (removing the calibration layer, or removing geospatial feature hashing) each measurably underperform the full model on MAE and p50, confirming both components contribute real accuracy rather than being vestigial design choices.
+Tables 2 and 7 use different baselines, the routing engine ETA and the production XGBoost model, and cannot be compared directly. The paper says DeeprETA is launched and now serves all 4-wheel ETA prediction requests at Uber.
 
-**Online evaluation — a two-week global shadow test (paper).** *"Online shadow experiments were conducted globally to verify the performance of DeeprETA over a 2-week window. The launch criteria is to improve ETA accuracy from an online XGBoost model"* **(paper)**. A **shadow test**, in this context, means DeeprETA's predictions are computed and logged alongside the live production model's predictions, without being shown to users or affecting any real decision — letting the team measure real-world accuracy risk-free before committing to a launch. Results, measured against the production XGBoost model (not against RE-ETA, unlike Table 2 above — a different baseline, named explicitly here so the two tables aren't read as directly comparable):
+### Regional results
 
-| Request type | MAE improvement | p50 improvement | p95 improvement |
-|---|---|---|---|
-| Delivery | 2.91% | 4.74% | 3.92% |
-| Rides | 2.66% | 4.15% | 3.23% |
+Table 6 gives relative MAE improvement over the routing engine ETA by city:
 
-**(paper, Table 7)** — DeeprETA outperforms the in-production XGBoost model on both request types across every metric, confirmed as "aggregated from multiple launches of DeeprETA" **(paper)**.
+| City | XGBoost | ResNet | HammockNet | DeeprETANet |
+|---|---|---|---|---|
+| New York City | 4.09 | 7.02 | 7.13 | 7.20 |
+| Los Angeles | 4.84 | 6.29 | 6.41 | 6.80 |
+| London | 1.39 | 4.09 | 4.28 | 4.80 |
+| Mexico City | 3.93 | 5.86 | 6.31 | 6.60 |
 
-**Regional monitoring — a real, confirmed source of variance, flagged honestly.** The paper's city-level breakdown (Table 6) reports DeeprETANet's MAE improvement over RE-ETA varying meaningfully by city: New York City 7.20%, Los Angeles 6.80%, Mexico City 6.60%, and London only 4.80% **(paper)** — a visibly smaller gain in London than in the other three cities. The paper does not state why London improves less **(paper gives no causal explanation for this gap — not stated as fact here, only reported as an observed, unexplained pattern)**; it's reported here because this kind of per-region variance is exactly what Uber's own regional evaluation table is built to surface, and illustrates why monitoring has to be segmented by geography rather than reported as one global average that could hide an underperforming region.
+New York City improves the most. London is lowest for every model, so the gap is not specific to DeeprETANet. The paper offers no cause. The gain of DeeprETANet over XGBoost is largest in London, 3.4 points against 3.1 in New York City, 2.0 in Los Angeles and 2.7 in Mexico City. All models were trained and evaluated on global data.
 
-**Monitoring whether the correction model and the routing engine are drifting apart.** The paper gives a direct, confirmed signal for exactly this: *"after post-processing the mean residual is closer to 0"* **(paper)** — i.e., before correction, RE-ETA's own residual distribution has a nonzero mean (a systematic bias); after DeeprETA's correction is applied, the corrected prediction's remaining error should average out much closer to zero. Tracking how close to zero the corrected prediction's mean residual stays over time is the operational analog of "is the correction model still tracking the routing engine's current behavior" — if RE-ETA's own bias pattern shifts (a map-data update, a new routing algorithm version) faster than the weekly retraining cadence catches up, the mean residual drifts away from zero again, the concrete, measurable symptom of the two systems falling out of sync.
+### Residuals after correction
 
-**The feedback loop back into Step 3.** Every completed trip's ATA becomes a new labeled training example for the next weekly retraining cycle **(paper)** — the same "labels arrive as a byproduct of product usage" structural advantage named in Step 1, now completing the loop back into the data pipeline.
+Figure 7 shows, for each city on a 1% sample, the bivariate distribution of the routing engine's residuals and the predicted residuals. The paper notes that rides and delivery have quite different residual distributions, and that after post-processing the mean residual is closer to 0. Tracking the mean residual over time is a reasonable monitor of drift between the model and the routing engine. That use is this document's suggestion.
 
-**Failure modes.**
-1. **Re-routing and noisy data**, the paper's own named cause of RE-ETA error in the first place **(paper)** — a driver takes a different path mid-trip than the one RE-ETA was computed against, and the correction model, trained on historical re-routing patterns, may not have learned this specific real-time deviation.
-2. **Base-estimate drift between retraining cycles** — per the monitoring signal above, if RE-ETA's own behavior shifts faster than the weekly retrain cadence, the correction model is, for some period, correcting for a bias pattern that no longer matches the routing engine's current behavior.
-3. **Regional performance variance**, confirmed by the London gap in Table 6 above, with no stated cause — a reminder that an aggregate global metric can mask a region where the correction is meaningfully weaker.
-4. **The late/early asymmetry cutting the wrong way at the tails** — the asymmetric Huber loss (Step 4) is tuned on an aggregate judgment that lateness costs more than earliness, but any individual trip could be the rare case where that judgment doesn't hold (e.g., a rider who needs to know they have *more* time, not less) — a limitation of any single shared loss function tuned for the aggregate case, named here as this document's own inference from the mechanism, not a failure mode the paper itself discusses.
+### The paper's own limitation
 
-**Trade-offs considered:** Evaluating against RE-ETA's own error (Table 2, offline) and separately against the current production XGBoost model (Table 7, online shadow test) gives two genuinely different signals — the first measures total value captured relative to doing nothing beyond the routing engine, the second measures incremental value relative to the system actually being replaced — and reporting both, rather than collapsing them into one number, is more honest about what's actually being claimed, at the cost of the two tables not being directly comparable to each other (a distinction this document flags explicitly above rather than letting a reader assume they are). Running a full two-week global shadow test before launch, rather than a faster, smaller-scale test, costs real calendar time and compute to run the shadow traffic — but it's what let the team catch regional variance (Table 6) and request-type variance (Table 7's split) before committing to a global launch, the same "measure before you ship" discipline capstone #4's (Airbnb) paper applies to its own NDCG-before-booking-tests sequencing.
+It evaluated the hybrid approach only with Uber's proprietary routing engine. It expects similar gains with others and did not test it.
+
+### Failure modes
+
+- Re-routing and noisy data, the sources' own reason the routing engine ETA is off.
+- Drift between weekly retraining cycles if the routing engine changes.
+- Regional variance, as in London.
+- A single loss asymmetry that is wrong for an individual rider who needs a safe estimate in the other direction. This is reasoned.
+
+### What breaks first at 10×
+
+| Quantity | At 10× | Reason |
+|---|---|---|
+| Request rate | 10 times | Scales with demand |
+| Hosts | About 10 times | One short CPU call per request |
+| Embedding memory | Grows with vocabulary and hash bins, not traffic | Fixed-size tables |
+| Training data | 10 times the requests per week | Weekly retraining reads more |
+| Metric noise | Falls with the square root of the sample | Easier to see small gains |
+
+### Trade-offs considered
+
+Reporting against the routing engine shows total value over doing nothing, and reporting against the old model shows the increment from replacing it. A two-week shadow test costs time and avoids exposing riders to an unproven model. Splitting results by city keeps a global average from hiding a weak region.
 
 ---
 
-## Source(s) and Further Reading
+## Sources and Further Reading
 
-- Uber Engineering, *"DeepETA: How Uber Predicts Arrival Times"* — **primary**. The live original (`eng.uber.com`) and its `uber.com` mirrors could not be fetched as raw text, but a **Wayback Machine snapshot** (`https://web.archive.org/web/20220701063549/https://eng.uber.com/deepeta-how-uber-predicts-arrival-times/`) was retrieved directly via `curl` and parsed to raw plain text, and used to character-check the specific blog claims in Step 2 (the "few milliseconds at most" latency requirement) and Step 5 (the general embedding-lookup-tables statement and the separate, geospatial-specific coordinate-hash-lookup O(1) statement) — those claims are tagged **(blog, character-verified via Wayback Machine snapshot)** above. Every other claim attributed to this source (not re-checked against that snapshot) remains tagged **(blog, paraphrased — not independently character-verified)**. Regardless of verification status, no claim attributed to this source is ever placed inside quotation marks, per this repo's quote-fidelity rule.
-- Hu, Binaykiya, Frank, and Cirit, *"DeeprETA: An ETA Post-processing System at Scale,"* arXiv:2206.02127 (submitted June 5, 2022), Uber Technologies Inc. — **primary**; the source of every claim tagged **(paper)** above, read and character-verified directly from its full raw text (fetched via the paper's ar5iv HTML rendering), including the residual/RE-ETA/ATA problem framing, the DeeprETANet architecture (embedding module, linear self-attention interaction layer, calibration layer), the asymmetric Huber loss, the feature-encoding details (quantile bucketization, multi-resolution geohashing), the parameter-count breakdown, and every numeric table (offline Table 2, online shadow-test Table 7, city-level Table 6, training-volume Table 5).
-- Katharopoulos, Vyas, Pappas, and Fleuret, *"Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention,"* ICML 2020 — the linear self-attention mechanism DeeprETANet adopts specifically to meet its latency constraint, cited by the paper above rather than independently read for this document.
-- Chen and Guestrin, *"XGBoost: A Scalable Tree Boosting System,"* KDD 2016 — the gradient-boosted decision tree algorithm (already defined in full in this repo's capstone #4, `case-studies/airbnb-search-ranking/README.md`, Step 4 Sidebar) that backed Uber's pre-DeeprETA production ETA model, per-mega-region, before this capstone's architecture replaced it.
-- `appendix/glossary.md` — a new entry added for **residual / base estimate**, this capstone's central concept with no existing Lesson 1–9 home. A second genuinely new concept, **self-attention over tabular features without positional encoding**, is defined in full on first use above (Step 4's Sidebar) but was judged, as a deliberate call consistent with capstone #6's (PYMK) precedent for Edge-FPR/SPR and calibration, to be a specific application of an already-glossaried idea (self-attention/Transformers, already defined generically in Lesson 1's KV-cache Concept) rather than a wholly new architectural concept — it gets its own Sidebar for the specific twist (no positional encoding, linear attention for latency) but not a second, separate glossary headword. Quantile bucketization of continuous features and multi-resolution geospatial feature hashing are likewise defined in full inline (Step 3) without their own Sidebar/glossary entries, as narrower feature-engineering techniques layered on top of this repo's already-glossaried **feature hashing** entry (capstone #2) rather than new concepts in their own right — the same judgment call, made explicitly rather than silently.
-- `lessons/lesson-1-ai-fundamentals-refresher.md`, Group B's KV-cache Concept — the existing generic transformer/self-attention definition this capstone's Step 4 Sidebar builds on rather than re-derives.
-- `case-studies/llm-inference-serving/README.md` (capstone #10), Step 1 — the <200ms/<1.5s p50/p99 time-to-first-token latency reference point used in Step 2 above as an internal comparison anchor for just how tight this capstone's own 3-4ms serving budget is.
-- `case-studies/ctr-prediction/README.md` (capstone #2) — referenced in Step 3 for the already-glossaried **feature hashing** entry this capstone's geospatial feature hashing specializes, and in Step 1 for the shared "labels arrive as a byproduct of product usage" structural pattern both capstones' training data share.
+- Hu, Binaykiya, Frank and Cirit, "DeeprETA: An ETA Post-processing System at Scale," arXiv:2206.02127 (June 5, 2022). The source of the formulation, the architecture, the loss, the tables and the latency figures marked source-confirmed.
+- Uber Engineering, "DeepETA: How Uber Predicts Arrival Times Using Deep Learning," February 10, 2022. The source of the 7 architectures tried, the latency requirement, the 0.25% figure, the O(1) lookup comparison, the complexity example and the serving path.
+- Katharopoulos et al., "Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention," ICML 2020, the linear attention the model uses. Cited by the paper and not read for this document.
+- [Lesson 7](../../lessons/lesson-7-application-architecture-and-security.md), Concept 4: the estimation method used in Step 2.
+- [Capstone #2, CTR Prediction](../ctr-prediction/README.md): a contrasting result on feature hashing.
+- [Glossary](../../appendix/glossary.md): residual and base estimate.
+
+Labels: *(source-confirmed)* is in the paper or the blog post. *(illustrative)* is a planning assumption of this document.

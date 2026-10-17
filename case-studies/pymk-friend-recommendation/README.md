@@ -1,442 +1,402 @@
 # Capstone #6: Friend/Connection Recommendation — LinkedIn's "People You May Know" (PYMK)
 
-**Source(s):** Primary — LinkedIn Engineering, *"Building a Heterogeneous Social Network Recommendation System,"* Oct. 6, 2020 (originally published at `engineering.linkedin.com/blog/2020/building-a-heterogeneous-social-network-recommendation-system`, now served at `linkedin.com/blog/engineering/optimization/building-a-heterogeneous-social-network-recommendation-system`), co-authored by Parag Agrawal, Ankan Saha, Yafei Wang, Aastha Nigam, and Eric Lawrence. Primary — LinkedIn Engineering, *"Optimizing People You May Know (PYMK) for Equity in Network Creation,"* Aug. 5, 2021 (`linkedin.com/blog/engineering/member-customer-experience/optimizing-pymk-for-equity-in-network-creation`). A third primary source, used because the two posts above turn out not to cover it — see the honesty note below — is LinkedIn Engineering's PYMK team overview page (`engineering.linkedin.com/teams/data/artificial-intelligence/people-you-may-know`).
+## At a glance
 
-**Confidence:** Moderate-to-strong, but with one specific, honest correction worth surfacing rather than papering over. The 2020 heterogeneous-network post and the 2021 equity post are this capstone's two headline sources, and together they might seem to establish triangle-closing — the idea that this capstone exists to teach — as a feature either post actually describes. Both posts were fetched and read in full for this document. **The 2020 post does not mention triangle-closing, mutual connections, or any graph-traversal feature at all** — its only reference to graph structure is a single, generic line about "neural-network embeddings that capture the member's network topology" as one input feature among several. Triangle-closing — the actual concept this capstone is supposed to teach — is instead described, in exactly these terms, on LinkedIn Engineering's separate PYMK team overview page, which also carries PYMK's confirmed scale figures (used in Step 2) and the plain statement that "PYMK uses a logistic regression model." This document therefore treats all three pages as primary LinkedIn Engineering sources, but is explicit, at every point below, about which specific page confirms which specific claim — the three pages describe PYMK at different levels (team-level overview vs. the broader 2020 cross-entity recommender vs. the 2021 fairness follow-up) and are not simply interchangeable. All of this document's **(2020 post)**, **(2021 post)**, and **(team page)** tags were read directly from each page's fetched text, not inferred or merged across pages without saying so. Figures tagged **(illustrative)** are this document's own worked estimates, clearly kept separate from confirmed figures throughout, consistent with how capstones #1–#5 in this repo handle scale numbers the sources themselves only give qualitatively.
+| Topic | Summary |
+|---|---|
+| Sources | Three LinkedIn Engineering pages. The 2020 post "Building a Heterogeneous Social Network Recommendation System" (October 6, 2020, Agrawal, Saha, Wang, Nigam and Lawrence). The 2021 post "Optimizing People You May Know (PYMK) for Equity in Network Creation" (August 5, 2021, Yin and co-authors). The PYMK team page. |
+| Problem | Recommend people a member may know, from a graph that grows faster than the site, and keep the recommender from favoring members who are already well connected. |
+| Core idea | A binary classifier scores whether two people know each other, with triangle closing (friends of friends) as the main candidate signal. A re-ranker discounts overloaded recipients, and a fairness re-ranker gives qualified infrequent members equal representation. |
+| Wider system | The 2020 post describes a second-pass ranker that orders cohorts of different entity types against each other. It predicts downstream interactions, meaning likes, comments and re-shares on the recommended entity's content, not connection acceptance *(source-confirmed)*. |
+| Scale | PYMK processes hundreds of terabytes a day and hundreds of billions of potential connections, trains on billions of samples with hundreds of features, and refreshes results daily *(source-confirmed, team page)*. |
+| Headline results | Impression decay cut overloaded recipients by 50%, requests sent fell 1%, recipient sessions rose 1%. Fairness re-ranking raised invitations sent to infrequent members by 5.44% and connections they made by 4.8%, with frequent members neutral *(source-confirmed, 2021 post)*. |
+| Not published | The label definition, offline metrics, model sizes, latency, and the re-ranking parameters. The sharded graph store in Step 5 is a teaching design. |
+| First to break | Second-degree expansion. The team page says data processing grows much faster than the site, because PYMK looks at connections of connections. |
+| Easy-to-miss traps | A downstream interaction is not a connection. A 1:2 impression guarantee gives follow cohorts more impressions, not connections more weight. An edge list stores each connection twice, not four times. A neutral result for frequent members is not proof of no harm. |
+| Practice PDFs | [Study edition](../../capstone-study-and-mock/pymk-friend-recommendation/capstone6_pymk_friend_recommendation_study.pdf) · [Mock interview](../../capstone-study-and-mock/pymk-friend-recommendation/capstone6_pymk_friend_recommendation_mock.pdf) |
 
-**Scope note:** This capstone covers PYMK specifically — the model and infrastructure that predicts and ranks **member-to-member connection** recommendations. The 2020 post actually describes a broader system: the same ranking framework (described below) also drives recommendations for hashtags to follow, companies to follow, other members to follow, groups, newsletters, and events — PYMK is only the "CONNECTION edge type" slice of that larger heterogeneous recommender. This document stays focused on the CONNECTION slice and treats the other five entity types only as context for why PYMK's own score has to be made comparable to scores from entirely different models (Step 4). Also out of scope: the actual UI/ranking-surface design of the MyNetwork tab itself (the 2020 post confirms recommendations are presented "as a horizontal carousel," but this document doesn't design that surface) and anything about the non-CONNECTION entity types' own models.
+Evidence labels used below: *(source-confirmed)* means the figure or claim is on one of the three pages. *(illustrative)* means it is this document's planning assumption or design. The pages are blog posts, so they give few numbers and no formulas.
+
+### Concepts this case study builds on
+
+| Concept | Where it is taught | One-line recap |
+|---|---|---|
+| Sharding a table by key, and the cost of cross-shard queries | [Lesson 5, Concept 1](../../lessons/lesson-5-data-layer.md#concept-1-rdbms-scaling) | Split rows across nodes by a key. A query that needs several shards is assembled by the application. |
+| Graph databases | [Lesson 5, Concept 2](../../lessons/lesson-5-data-layer.md#concept-2-nosql-types) | Nodes and edges, built for traversals. |
+| Offline evaluation | [Lesson 9, Concept 2](../../lessons/lesson-9-evaluation-and-observability.md#concept-2-offline-evaluation--golden-datasets-llm-as-judge-regression-suites) | Gate changes on a fixed measurement, and know what it cannot show. |
+| Heterogeneous network, triangle closing, equity re-ranking | [Glossary](../../appendix/glossary.md) | Mixed node and edge types, friends-of-friends candidates, and a fairness correction after scoring. |
 
 ---
 
 ## Step 1: Clarify Requirements & Frame the ML/AI Objective
 
-**The actual objective.**
+### The objective
 
-- LinkedIn's own PYMK team page frames the core task directly: PYMK is built around a binary classification problem — predicting whether two people know each other, i.e., whether a connection between them is likely **(team page)**.
-- Notation: for a given member `A` and a candidate member `B`, estimate `P(connect | A, B)` — the probability that, if `B` is recommended to `A`, a connection between them will actually form.
-- This is link prediction over an existing graph: the model trains on already-connected member pairs as positive examples and, implicitly, non-connected pairs as the background negative class **(team page)**, then scores pairs that aren't connected yet but plausibly could be.
+The team page says that at the heart of PYMK is a binary classification problem: predict whether two people know each other. The 2021 post says PYMK estimates the propensity to connect between two members with a combination of linear and non-linear models, produces a P(connect) score, and recommends a list of potential new connections ranked by it. The team page says PYMK uses a logistic regression model to combine hundreds of features. The pages differ in level of detail and may describe different parts of the system.
 
-**What counts as ground truth / feedback signal — and why it isn't one single signal.**
+### How a connection forms
 
-- Training labels come from the graph itself: a pair is positive if a `CONNECTION` edge already exists between them **(team page, inferred framing)**.
-- The sources are honest that this is close to, but not exactly, "did the recommendation lead to a connection" — the 2021 equity post tracks two separable downstream events as genuinely distinct metrics, not one:
-  - **Invitations sent** — a member acted on a recommendation by sending a connection request.
-  - **Connections made** — the recipient accepted it **(2021 post)**.
-- These diverge in the equity post's own reported results (Step 6): a member sending more invitations is not the same outcome as more of those invitations actually being accepted — and only the latter is the real ground-truth event this document cares about most. A recommendation that's displayed but never acted on, or acted on but rejected, is not success.
-- The broader 2020 post's term for this same general class of event, generic across entity types, is a **"downstream-interaction"** — for PYMK specifically, a connection accepted; for a hashtag recommendation, a follow **(2020 post)**.
+A sender sends an invitation, and a connection forms only after the recipient accepts it *(source-confirmed, 2021 post)*. So there are two events, and they can move apart: invitations sent and connections made. A recommendation that is shown and ignored, or sent and declined, is not a success.
+
+### Labels
+
+The pages do not define the training label. The 2021 post says the algorithms "learn from recommendations that result in successful matches", and that frequent members are more represented in the training data because they are more active. That points to training examples drawn from the outcomes of recommendations. The exact rule is not published, so any statement of it is a design choice.
+
+### Downstream interactions are a different thing
+
+The 2020 post's second-pass ranker predicts downstream interactions. A like, comment or re-share on content produced by the recommended entity counts. For a connection edge, that means likes, comments or re-shares on content posted by the new connection. It is not the same as an accepted invitation, and the two should not be mixed up when reading the metrics.
 
 ```mermaid
 flowchart LR
     A["PYMK recommends B to A"] --> B{"A sends an invitation?"}
-    B -->|"No action"| C["No signal counted"]
-    B -->|"Invitation sent"| D{"B accepts?"}
-    D -->|"Rejected"| E["Invitation sent, no connection\n(not treated as success)"]
-    D -->|"Accepted"| F["Connection made =\ndownstream-interaction (2020 post)\n--> positive training label"]
+    B -->|"No"| C["Nothing recorded"]
+    B -->|"Yes"| D{"B accepts?"}
+    D -->|"No"| E["Invitation sent, no connection"]
+    D -->|"Yes"| F["Connection made"]
+    F --> G["Later: likes, comments, re-shares\nare downstream interactions"]
 ```
 
-**Explicitly out of scope:**
+### Out of scope
 
-- The MyNetwork tab's presentation layer (carousel placement, visual cohort design).
-- The non-CONNECTION entity types (Hashtag, Company, Member-Follow, Groups, Newsletters, Events) that share PYMK's second-pass ranking layer (Step 4) but have their own separate first-pass models.
-- Anything about LinkedIn's broader feed-ranking or job-recommendation systems, which are separate products.
+- The page layout. The 2020 post says cohorts are shown as horizontal carousels on the My Network tab.
+- The models for follow and subscribe recommendations.
+- LinkedIn's feed and jobs systems.
 
-**Trade-offs considered:** Training on existing-connection labels (link prediction) lets the model learn directly from the graph's own structure without needing any separate manual labeling process — the same "labels arrive for free as a byproduct of the product being used" advantage capstone #2's CTR model has over hand-labeled systems. But a model trained purely to predict `P(connect)` as high as possible, with no other constraint, has no built-in reason to prefer *showing* that recommendation to a member who genuinely needs more connections over a member who already has plenty and would accept almost anything recommended to them — this exact gap is what Step 4's equity work exists to close, and framing the objective honestly here (raw connection-likelihood, not yet "equitable connection-likelihood") is what sets that trade-off up rather than hiding it until Step 4.
+### Trade-offs considered
+
+A score trained only to predict connection has no reason to care who receives an invitation or who is under-served. The 2021 post is about exactly that gap, and the changes in Step 4 spend some invitation volume to close it.
 
 ---
 
 ## Step 2: Back-of-Envelope Constraints
 
-**Confirmed scale, directly from the source (team page).**
+### What the team page says
 
-- The system "daily processes 100s of terabytes of data, 100s of billions of potential connections" **(team page)**.
-- It trains on "billions of samples" **(team page)**.
-- It combines "hundreds of features" in its logistic regression model **(team page)**.
-- These are the only hard, LinkedIn-confirmed scale figures either source gives for PYMK specifically — no post discloses an exact member count, exact edge count, or exact QPS figure for the CONNECTION edge type.
+PYMK daily processes hundreds of terabytes of data and hundreds of billions of potential connections, pushes new results every day, and trains on billions of samples. Because it looks at the second-degree network, the rate of growth in processing is much faster than the growth of the site *(source-confirmed)*. The pages give no member count or degree.
 
-**An illustrative member-count anchor, kept visibly separate from the figures above.** LinkedIn's own public announcements put its member base at roughly 740 million as of February 2021 **(secondary — tertiary business-press reporting of a LinkedIn-sourced figure, not independently confirmed by either engineering post read for this document; used here purely as an order-of-magnitude anchor, the same discipline Lesson 5's own case-study pointer for this capstone already applies)**.
+### Sizing the graph
 
-**A numeric sanity-check: does "100s of billions of potential connections" per day line up with 740 million members?** Taking a representative point estimate of 300 billion potential connections/day (within the team page's own "100s of billions" range) against the 740-million-member illustrative anchor:
+The numbers below assume 700 million members and an average of 400 connections each *(illustrative)*.
 
-```
-implied_candidate_pairs_per_member_per_day = 300,000,000,000 potential connections
-                                              ÷ 740,000,000 members
-                                            ≈ 405 candidate pairs evaluated per member per day
+```text
+edge rows, each connection stored from both ends = 700,000,000 × 400 = 2.8 × 10^11
+at 24 bytes a row = 6.7 TB in all, about 3.3 GB on each of 2,048 shards
 ```
 
-**~400 candidate pairs per member per day** is a plausible order of magnitude for a friends-of-friends (second-degree) candidate pool after some amount of filtering/truncation — it's neither "a handful" nor "every other member on the platform," which is exactly the shape triangle-closing (Step 3) produces: a pool bounded by how many second-degree neighbors a member's own direct connections introduce, not by the platform's total size. This cross-check is this document's own derivation, built entirely from the team page's confirmed order-of-magnitude figure plus one illustrative, clearly-tagged anchor — the same "reproduce the source's own number from first principles" sanity check capstones #1–#3 already use.
+Counting by the sum of degrees avoids double counting: every row is one half of a connection, and the number of halves is members times average degree.
 
-**Why naive, full triangle-closing is computationally infeasible at this scale — the calculation that motivates Step 5's sharded serving design.** Triangle-closing (defined formally in Step 3) requires, for one member, expanding every one of their direct connections' own connections — a 2-hop graph traversal. Taking an illustrative average degree of **400 direct connections per member (illustrative — not a number either source states; chosen only because it lands this calculation's output in the same order of magnitude as the team page's own confirmed "100s of billions" figure, as a plausibility check, not because either post names 400 as LinkedIn's actual average degree)**:
+### Second-degree expansion
 
-```
-two_hop_expansion_steps_per_member = direct_connections × connections_of_each_connection
-                                    = 400 × 400
-                                    = 160,000 traversal steps per member (naive, unfiltered)
-
-aggregate_daily_steps (illustrative, full member base) = 740,000,000 members × 160,000
-                                                        ≈ 1.18 × 10^14 (118 trillion) traversal steps/day
+```text
+2-hop walks for one member = 400 × 400 = 160,000
+for all members            = 700,000,000 × 160,000 = 1.12 × 10^14 a day
 ```
 
-```mermaid
-flowchart LR
-    M["1 member"] -->|"400 direct connections\n(illustrative)"| F["400 friends"]
-    F -->|"400 connections each"| S["160,000 2-hop traversal\nsteps (naive, unfiltered)"]
-    S -->|"× 740M members\n(illustrative anchor)"| D["≈1.18×10^14 steps/day\n(118 trillion)"]
+This is the mean-field figure. Real degrees are skewed, and the sum of squared degrees is larger than members times the mean degree squared, so the true count is higher.
+
+### Reconciling with the team page
+
+The team page's candidates are hundreds of billions, not 112 trillion. Taking 3 × 10^11 candidate pairs:
+
+```text
+candidate pairs per member = 3 × 10^11 ÷ 700,000,000 = about 430
+share of the 160,000 raw walks that survive = 430 ÷ 160,000 = 0.27%
+if all 3 × 10^11 were raw walks: degree = sqrt(430) = about 21 connections per member
 ```
 
-- 118 trillion 2-hop traversal steps a day, if computed by naively walking the live graph on every member every day, is not a number any single database node — or even a modest cluster of un-sharded ones — can absorb inside a "daily" batch window alongside the hundreds of terabytes of other data the team page says the system already processes.
-- This is the concrete, numeric version of why PYMK's candidate generation has to run against a graph storage layer that's already partitioned for exactly this access pattern (Step 5), not computed fresh, un-sharded, against a single store.
+So either members have about 21 connections each, which is far below typical, or most second-degree pairs are filtered out before scoring. The second is the more plausible reading, and the pages do not say how the filtering is done.
 
-**Trade-offs considered:** Using the team page's confirmed, if qualitative, "100s of billions"/"billions of samples"/"hundreds of features" figures as the load-bearing facts (rather than inventing precise-looking numbers neither source gives) keeps this document honest about what's actually confirmed — the cost is that Step 2's arithmetic has to lean more heavily on illustrative anchors than, say, capstone #2's CTR paper, which at least states exact dimensionality figures. Picking a smaller illustrative average-degree anchor (say, 150 instead of 400) would shrink the 2-hop traversal-cost estimate roughly proportionally to its square, but wouldn't change the qualitative conclusion — any average-degree anchor consistent with the team page's own confirmed "100s of billions of potential connections" scale produces a traversal cost that rules out live, un-sharded, full-graph computation.
+### Reading the graph for a batch job
+
+If a daily job looks up each friend's list for each member, the number of lookups equals the number of edge rows:
+
+```text
+lookups a day = 2.8 × 10^11, which is 3.2 million a second over 24 hours
+data returned = 2.8 × 10^11 × 400 ids × 8 bytes = 896 TB
+```
+
+That is the same order as the team page's hundreds of terabytes a day. At an assumed 20,000 lookups a second per node, 3.2 million a second needs about 162 nodes, so this load is set by throughput and not by the 6.7 TB of storage.
+
+### Trade-offs considered
+
+A smaller degree shrinks the 2-hop cost with its square. Any degree consistent with hundreds of billions of candidates still rules out expanding all second-degree pairs without filtering.
 
 ---
 
 ## Step 3: Data / Knowledge Pipeline
 
-### Sidebar — Connection graph and heterogeneous network
+### Sidebar: heterogeneous network
 
-*(This concept, "heterogeneous network," has no existing Lesson 1–9 home; "connection graph" itself is not re-derived here — it's a direct application of Lesson 5's Concept 2 graph-database definition (nodes and edges, purpose-built for traversal queries) to this specific domain, linked rather than re-taught.)*
+A graph where nodes and edges come in several types. The 2020 post describes three edge types *(source-confirmed)*:
 
-- **Why?** Lesson 5's Concept 2 already defines a graph database generically: nodes, edges, and traversal queries that are cheap to express there but expensive as chained joins in a relational model. PYMK's actual data is exactly that shape, specialized to one domain: a **connection graph** is a graph database instance where nodes are LinkedIn members and edges represent a relationship between two members — here, specifically, the bidirectional `CONNECTION` edge type **(2020 post)**. But `CONNECTION` is only one of several edge types in LinkedIn's actual production graph, per the 2020 post (see What, below, and the diagram).
-- **What?** A **heterogeneous network**, in the sense the 2020 post's architecture uses it, is a graph containing more than one *type* of node and more than one *type* of edge, where each (node-type, edge-type) combination can carry its own distinct meaning and its own distinct model — as opposed to a **homogeneous network**, where every node and edge is the same type (a connection graph considered on its own, with only members and `CONNECTION` edges, is homogeneous). LinkedIn's actual production graph is heterogeneous: member nodes connect to member nodes (`CONNECTION`), to hashtag/company/member nodes (`FOLLOW`), and to group/newsletter/event nodes (`SUBSCRIBE`) **(2020 post)**. PYMK is the slice of this heterogeneous network that only concerns member-to-member `CONNECTION` edges.
+| Edge | Connects | Direction |
+|---|---|---|
+| CONNECTION | a member to another member | two-way. Both the inviter and the receiver get access to each other's content |
+| FOLLOW | a member to a hashtag, company or member | one-way |
+| SUBSCRIBE | a member to a group, newsletter or event | one-way |
 
 ```mermaid
 flowchart LR
-    M1["Member"] <-->|"CONNECTION\n(bidirectional)"| M2["Member"]
-    M1 -->|"FOLLOW\n(unidirectional)"| F["Hashtag / Company / Member"]
-    M1 -->|"SUBSCRIBE\n(unidirectional)"| S["Group / Newsletter / Event"]
+    M1["Member"] <-->|"CONNECTION"| M2["Member"]
+    M1 -->|"FOLLOW"| F["Hashtag / Company / Member"]
+    M1 -->|"SUBSCRIBE"| S["Group / Newsletter / Event"]
 ```
-- **How?** Confirmed asymmetry matters mechanically: a `CONNECTION` edge is bidirectional — if `A` connects to `B`, `B` is connected to `A` too — while `FOLLOW` and `SUBSCRIBE` are unidirectional **(2020 post)**. This is exactly why the recommender can't use one shared ranking model across every entity type unmodified: a connection's "did it work" signal (an accepted, mutual edge) is structurally different from a follow's (one-directional, no acceptance step) — precisely why the 2020 post's architecture (Step 4) separates a per-edge-type first-pass model from a shared second-pass layer that reconciles scores across these edge types, rather than training one model end to end.
 
-**Triangle-closing: the central graph feature this capstone exists to teach.**
+The edges serve different value propositions, so their success signals differ. That is why the 2020 post ranks entities of one type first and cohorts of different types second.
 
-### Sidebar — Triangle-closing
+### Sidebar: triangle closing
 
-*(This concept has no existing Lesson 1–9 home.)*
-
-- **Why?** Predicting `P(connect | A, B)` for every one of the "100s of billions of potential connections" (Step 2) the platform could in principle consider is wasteful if most pairs have near-zero chance of ever connecting — two members on opposite sides of the graph, with no shared context, almost never form a connection. A cheap, high-precision way to narrow the candidate pool before expensive scoring happens is exactly what candidate generation (vs. ranking — the same two-stage shape capstone #3's glossary entry already names) needs.
-- **What?** **Triangle-closing**, in the PYMK team page's own framing, means looking at friends-of-friends: "if Alice knows Bob and Bob knows Carol, then maybe Alice knows Carol" **(team page)**. Graph-theoretically, `Alice–Bob` and `Bob–Carol` are two edges of an open triangle (a "wedge"); triangle-closing is the hypothesis that a third edge, `Alice–Carol`, is unusually likely to form, closing the triangle — because two people who already share one mutual connection are, structurally, far more likely to actually know each other than two arbitrary members are.
+The team page's example: if Alice knows Bob and Bob knows Carol, then maybe Alice knows Carol. Two edges form an open triangle, and the hypothesis is that the third edge is unusually likely. The page says closed triangles are then scored with signals such as whether the pair overlapped at an organization or school, their age difference, and their geographic distance. Triangle closing proposes candidates and the other features rank them.
 
 ```mermaid
 flowchart LR
     Alice -->|"knows"| Bob
     Bob -->|"knows"| Carol
-    Alice -.->|"candidate: maybe knows\n(triangle-closing hypothesis)"| Carol
-```
-- **How?** The team page is explicit that triangle-closing isn't the finish line, only the candidate-generation step: "one can then score these closed triangles with such features as whether the pair overlapped at an organization or school" **(team page)** — i.e., once a candidate pair is surfaced because they share a mutual connection, that pair still gets scored by the same richer feature set (organizational overlap, age difference, geographic distance — all named by the team page) before a final recommendation is made. Triangle-closing itself just answers "which pairs are even worth scoring," not "how strong is this specific pair's match."
-
-**The rest of PYMK's confirmed feature set (team page).** Beyond triangle-closing:
-
-- **Age difference** between the two members.
-- **Geographic distance**.
-- **Organizational-overlap model** — richer than a simple "worked at the same company" boolean: it factors in when each person joined and left the organization, the organization's size, and how socially connected that organization tends to be on LinkedIn, contrasting (the team page's own example) a long tenure at a small, tightly-connected organization against a few overlapping months at a large one **(team page)**.
-- **"Neural-network embeddings that capture the member's network topology"** — a feature the 2020 post adds that the team page doesn't mention **(2020 post)**: a learned, dense representation of a member's position in the graph, fed as a member-level feature alongside the hundreds of others the team page's logistic regression model combines.
-
-**What happens when the graph data is wrong or stale.** A newly-joined member starts with zero direct connections — triangle-closing, by construction, can surface no friends-of-friends candidates at all for a member with no friends yet **(this document's own inference from the mechanism above, not a claim either source states directly)**. This cold-start gap is the structural root of the exact "infrequent member" disadvantage the 2021 equity post addresses (Step 4) — fewer connections means fewer, lower-quality recommendations, which keeps connections thin (the loop below), a pattern the 2020 post names directly in its own, more general terms: "there is also heterogeneity in interactions among member groups... frequent members continuously provide us with rich data" while "inactivity from infrequent members leads to lack of data and lower-quality recommendations" **(2020 post)**.
-
-```mermaid
-flowchart LR
-    A["New member: 0 direct connections"] --> B["Triangle-closing surfaces\nno friends-of-friends candidates"]
-    B --> C["Fewer, lower-quality\nrecommendations"]
-    C --> D["Member stays with\nfewer connections"]
-    D --> B
+    Alice -.->|"candidate"| Carol
 ```
 
-**A real triangle-closing feature-extraction function.** The following is this document's own illustrative implementation of the triangle-closing mechanism described above — a mutual-connection-count feature extractor over an adjacency-list representation of the connection graph, the same general shape as a candidate generator's actual logic, not the team's own (unpublished) production code:
+### Features the team page names
+
+- Overlap at an organization or school, age difference and geographic distance.
+- An organizational-overlap model from LinkedIn's WWW 2013 research. It uses when each person joined and left, the size of the organization, and how social the organization is. Working together for 10 years in a small organization implies more affinity than a few months.
+- Impression discounting, from the team's KDD 2014 paper: results that members saw and ignored are ranked lower.
+
+The neural-network embeddings of network topology that the 2020 post mentions are member features of the second-pass ranker. They are not named as inputs to PYMK's own model.
+
+### Cold start
+
+A new member has no connections, so triangle closing has nothing to expand. That follows from the mechanism and is not stated on the pages. The 2020 post does say that frequent members give rich data while inactive members lead to less data and lower-quality recommendations.
 
 ```python
-def mutual_connection_candidates(member_id: int, adjacency: dict[int, set[int]],
-                                  min_mutual: int = 1) -> dict[int, int]:
-    """Triangle-closing candidate generation over an in-memory adjacency list.
-
-    adjacency[x] is the set of member IDs directly connected to member x
-    (a CONNECTION edge, bidirectional per the 2020 post).
-
-    For `member_id`, find every second-degree neighbor (a friend of a friend)
-    who is NOT already a direct connection, and count how many distinct
-    mutual (first-degree) connections link member_id to each candidate --
-    this count is the "closed triangle" signal the team page's scoring
-    step (organization/school overlap, etc.) is then applied on top of.
-    """
-    direct_connections = adjacency.get(member_id, set())
-    mutual_count: dict[int, int] = {}
-
-    for friend_id in direct_connections:
-        for second_degree_id in adjacency.get(friend_id, set()):
-            if second_degree_id == member_id:
-                continue                                   # skip back-edge to self
-            if second_degree_id in direct_connections:
-                continue                                   # already connected -- not a candidate
-            mutual_count[second_degree_id] = mutual_count.get(second_degree_id, 0) + 1
-
-    # Each entry's value is the number of distinct "closed triangles" --
-    # mutual direct connections -- between member_id and that candidate.
-    return {cand: count for cand, count in mutual_count.items() if count >= min_mutual}
+def friends_of_friends(member: int, adj: dict[int, set[int]]) -> dict[int, int]:
+    """Candidates and the number of mutual connections for each."""
+    direct = adj.get(member, set())
+    mutual: dict[int, int] = {}
+    for friend in direct:
+        for other in adj.get(friend, set()):
+            if other != member and other not in direct:
+                mutual[other] = mutual.get(other, 0) + 1
+    return mutual
 ```
 
-This is the exact computation Step 2's arithmetic flagged as infeasible to run live against the full, un-sharded graph at LinkedIn's scale — every call to `mutual_connection_candidates` is one member's slice of the 118-trillion-step/day aggregate estimate, which is why Step 5's serving design has to shard the underlying `adjacency` structure rather than hold it as one in-memory dict.
+This is this document's sketch of the idea, not LinkedIn's code. For one member it does about 160,000 steps at the assumed degree, and for all members the 1.12 × 10^14 above.
 
-**Trade-offs considered:** Triangle-closing is cheap, high-precision, and directly explainable (a recommended connection can be shown "you both know N people"), but it's also a low-recall candidate source by construction: two members who would genuinely benefit from connecting but share zero mutual connections (e.g., two people about to start working together for the first time) are structurally invisible to this signal alone, which is presumably part of why the team page lists age/geography/organizational-overlap as separate, complementary candidate/scoring signals rather than relying on triangle-closing exclusively. The organizational-overlap model's extra richness (tenure dates, org size, org social density, not just a same-company boolean) costs real feature-engineering and data-freshness effort — an org's "social density" has to itself be computed from the same graph, recomputed as the org and its membership changes — but a cruder same-company boolean would conflate a two-week internship overlap with a ten-year shared tenure, a distinction the team page's example explicitly cares about getting right.
+### Trade-offs considered
+
+Triangle closing is cheap, precise and explainable ("you both know N people"), and it has low recall: two people with no shared connection are invisible to it. The organizational-overlap model costs feature work and fresh data and separates a short overlap from a long one.
 
 ---
 
 ## Step 4: Model/Agent Core Design
 
-This capstone's two central teaching points, each confirmed from a different one of the three LinkedIn pages read for this document.
+### A. The two-phase ranking in the 2020 post
 
-### Teaching point A: the heterogeneous recommender's two-phase ranking (2020 post)
+The post says ranking heterogeneous recommendations follows two phases *(source-confirmed)*:
 
-**Edge-FPR — first-pass ranking, per edge/entity type.**
+- Edge-FPR, the first-pass rankers. They rank entities of one type among themselves, and cohorts of them are shown as carousels. The models are separate and independent, can use XGBoost, logistic regression or deep neural networks, may optimize different business metrics, and may produce scores on different scales.
+- SPR, the second-pass ranker. It ranks cohorts of different types against each other, so a member can choose the next edge to grow.
 
-- The 2020 post names its first stage **Edge-FPR** (edge-level first-pass ranker): "the Edge-FPR models are separate and independent AI models" **(2020 post)** — one per edge type (`CONNECTION`, `FOLLOW`, `SUBSCRIBE`), with `FOLLOW` further split by entity sub-type (diagrammed below).
-- Algorithm options named for an Edge-FPR model: **XGBoost** (Extreme Gradient Boosting — a widely-used, optimized implementation of the gradient-boosted decision tree (GBDT) technique already defined in capstone #4's Step 4 Sidebar, known for speed and strong out-of-the-box performance on structured/tabular data), logistic regression, and deep neural networks — without stating which specific algorithm backs the `CONNECTION` edge type's own model **(2020 post)**.
-- The PYMK team page fills that specific gap: PYMK's own model — the `CONNECTION`-edge Edge-FPR, in the 2020 post's vocabulary — "uses a logistic regression model for the binary classification problem to combine hundreds of features" **(team page)**.
-- This document treats these as two descriptions of the same component at different levels of specificity — the 2020 post naming the general architecture's flexibility, the team page naming PYMK's own specific choice — not as disagreeing sources.
-
-**SPR — second-pass ranking, shared across entity types.**
-
-- Edge-FPR's outputs — a `P(connect)`-shaped score for PYMK, a `P(follow)`-shaped score for a hashtag recommendation, etc. — aren't directly comparable to each other; they come from entirely different models trained on entirely different label distributions.
-- The 2020 post's second stage exists specifically to make them comparable: "we develop an XGBoost model that predicts the probability of downstream-interactions" **(2020 post)**, trained with a logistic loss over binary labels, taking calibrated Edge-FPR scores as input features.
-- Aggregation function: "could be a simple weighted mean aggregation or a complicated non-linear aggregation" **(2020 post)**.
-- The two stages are deliberately kept separate: "we keep Edge-FPR and SPR completely independent to avoid back-and-forth updates" **(2020 post)** — a direct, confirmed design choice, not an implementation detail left to inference.
+SPR is an XGBoost model that predicts the probability of downstream interactions with the top k entities of a cohort. It trains with a logistic loss on binary labels, using calibrated Edge-FPR scores and member features: profile features, activity features and neural-network embeddings of network topology. An aggregation function, which could be a weighted mean or a non-linear function, converts entity scores to a cohort score.
 
 ```mermaid
 flowchart TB
-    subgraph EdgeFPR["Edge-FPR (first-pass, per edge/entity type)"]
-        C["CONNECTION model\n(logistic regression -- team page)"]
-        F["FOLLOW models\n(hashtag / company / member)"]
-        Su["SUBSCRIBE models\n(group / newsletter / event)"]
-    end
-    C --> Cal["Calibration:\nscore quantiles --> observed response rate"]
-    F --> Cal
-    Su --> Cal
-    Cal --> SPR["SPR: XGBoost model\npredicts P(downstream-interaction)"]
-    SPR --> IF["Importance factors\n(e.g. illustrative 1:2 connection:follow weighting,\nrefreshed monthly/quarterly)"]
-    IF --> Rank["Final ranked recommendations"]
+    C["CONNECTION Edge-FPR"] --> CAL["Calibration"]
+    F["FOLLOW Edge-FPRs"] --> CAL
+    S["SUBSCRIBE Edge-FPRs"] --> CAL
+    CAL --> SPR["SPR: XGBoost on calibrated scores\n+ importance factors + member features"]
+    SPR --> RANK["Ranked cohorts"]
 ```
 
-**Calibration — why cross-entity-type comparison needs it at all.**
+### Three challenges and the answers
 
-- A raw PYMK score of 0.4 and a raw hashtag-follow score of 0.4 don't mean the same thing if the two underlying models were trained on different label bases and different feature distributions — SPR can't meaningfully combine them until they're put on a shared scale.
-- The 2020 post's calibration step maps score quantiles to observed response rate (diagrammed above) via a mapping function it says "could take a log-linear form," without committing to one functional form **(2020 post)**.
-- This is, in effect, the same underlying problem capstone #2's CTR system solves differently (Step 6 there): turning a raw model score into a number that means the same thing — a calibrated probability — across contexts where the raw score alone wouldn't be comparable.
+| Challenge | The post's answer |
+|---|---|
+| Scores from different models are not comparable | Calibration maps the quantiles of each Edge-FPR score to the observed response used to train that Edge-FPR. The mapping might be log-linear. |
+| Training data over-represents some edges. Members connect to few people and follow many hashtags, so follow edges get disproportionately high scores | Counterfactual experiments temporarily remove part of a member's network, by dropping content from feed and notifications for some existing edges, and measure the effect on engagement. The estimates become importance factors that multiply the scores of the corresponding cohorts. |
+| Retraining one model forces retraining the other | Keep Edge-FPR and SPR independent, so a change to an Edge-FPR does not force an SPR retrain. The post says tight coupling could give slightly better accuracy and would slow iteration. |
 
-**Importance factors.**
+### Training data and impression guarantees
 
-- A separate mechanism layered on top of calibrated SPR scores: per-edge-type (or per-cohort) **importance factors**, estimated from counterfactual experiments (the post describes temporarily withholding content from certain existing edges — e.g. filtering a member's feed or notifications — and measuring the resulting change in engagement) and then multiplied into a cohort's final score, refreshed "monthly or quarterly" **(2020 post)**.
-- The post's own illustrative (not measured) example, "a 1:2 importance for connection vs. follow edge" **(2020 post)**, means weighting a connection roughly twice as valuable as a follow recommendation of equal predicted probability — a product decision layered on top of the model's raw output, not learned by the model itself.
+SPR trains on a 5% holdout, a random bucket where cohorts are shown in random order, so that the Edge-FPR ranking does not bias the data. The post suggests the same data can train the Edge-FPRs.
 
-### Teaching point B: the 2021 equity trade-off — this capstone's most distinctive lesson
+A new entity type could be pushed down and never gather training data. The post offers stochastic impression guarantees per cohort type. One simple form reads the importance of each edge type and sets a constraint on the number of cohorts of each type. Its example: a 1:2 importance for connection against follow would ensure twice as many impressions of follow cohorts as of connection cohorts, while the ranking among them is still set by SPR. The guarantees are adjusted monthly or quarterly, are given per viewer and per edge type, and are not global per cohort, which the post calls far too complex to operationalize.
 
-**The problem, in the post's own terms.**
+Importance factors multiply scores. Impression guarantees are a separate constraint on counts, and the 1:2 example is about impressions.
 
-- The 2021 post frames this directly as a fairness challenge inherent to any system trained on its own historical outcomes: "a significant challenge for the accuracy of this system is controlling for external sociological factors," and the post is explicit that an AI product "can reflect an existing bias towards some groups of people over others" **(2021 post)**.
-- Mechanism: **frequent members (FMs)** — members who are already highly active and well-connected — "are typically recommended to other members at a higher rate," and because they get recommended more, they make more connections, and "these members can make even more connections, giving them further representation in the training data" **(2021 post)**.
-- This is a closed feedback loop (diagrammed below), confirmed directly by the post's own language.
+### Results the 2020 post reports
+
+A/B tests showed more engaged members and a significant increase in downstream interactions, and more members created edges and had conversations over them. It reports no magnitudes. It also notes cannibalization across edge types: forming one kind of edge can come at the cost of another.
+
+### B. The 2021 equity work
+
+The 2021 post says a challenge for the system is controlling for sociological factors such as a member's visibility off-platform, and that AI products can reflect an existing bias toward some groups. Frequent members (FMs, more engaged) are more represented in the training data, they are recommended at a higher rate, they make more connections, and that gives them further representation. Infrequent members (IMs) sit on the other side of the loop, although a member with very few connections might gain more from one more connection.
 
 ```mermaid
 flowchart LR
-    FM["Frequent members (FMs):\nalready active & well-connected"] -->|"recommended at\nhigher rate"| Rec["More recommendations shown"]
-    Rec --> Conn["More connections made"]
-    Conn --> Train["More representation\nin training data"]
-    Train --> FM
+    FM["Frequent members"] -->|"recommended more"| REC["More recommendations"]
+    REC --> CONN["More connections"]
+    CONN --> TRAIN["More training data"]
+    TRAIN --> FM
 ```
 
-- **Infrequent members (IMs)** sit on the losing end of that same loop, receiving fewer recommendations and contributing less training signal — even though, as the post notes, "a member who has very few connections might receive greater incremental utility from adding one more connection" **(2021 post)** — i.e., the member the raw `P(connect)`-maximizing system under-serves is plausibly the one who'd benefit most from being served well.
-- (A secondary, non-LinkedIn description of this same dynamic as "the rich get richer" is attributed by VentureBeat's coverage to a LinkedIn product manager, Albert Cui — that specific phrase does not appear in the primary 2021 post itself, and this document keeps that distinction explicit rather than presenting a secondhand paraphrase as the post's own wording.)
+### Change 1: impression decay
 
-**Two separate interventions, not one.** The post describes two distinct changes, addressing two distinct problems:
+Some members, such as influencers, senior executives and recruiters, receive very many requests. That can overrun their feed and notifications with updates that seem random, and they may miss relevant opportunities. The fix re-ranks by discounting recipients with an excess number of invitations: newScore = score × df, with df between 0 and 1. As a recipient gets more invitations, the original score has to be higher to appear. The post's example deprioritizes recipients with more than 10 invitations in the past week, and production uses a piecewise linear function of the number received.
 
-1. **Impression decay, for overloaded recipients.** A separate, member-experience-framed problem: some members were receiving so many connection invitations that their networks and feeds became cluttered. The fix re-scores a candidate recommendation as `newScore = score * df` (diagrammed below) — implemented in production as a piecewise linear function of recent invitation count, with the exact breakpoints and slopes not disclosed by the post **(2021 post)**. This is a direct, explicit instance of trading away raw predicted-connection-probability for a different goal: the post states it expected the change to cause a small drop in overall invitation volume (fewer invitations get sent once heavily-recommended recipients are deprioritized), and chose to proceed anyway because the user-experience benefit — fewer members buried in invitations — was judged worth that cost **(2021 post, paraphrased; the post's own exact wording here could not be confirmed character-for-character from the fetched text available to this document, so it is reported as a paraphrase rather than a quotation)**.
+The post says it expected a small decrease in engagement because fewer invitations would be sent, and went ahead to improve the experience.
 
-```mermaid
-flowchart LR
-    Score["Raw score: P(connect)"] --> Decay{"Recipient's recent\ninvitation volume"}
-    Decay -->|"Low volume"| High["df near 1\n(little decay)"]
-    Decay -->|"High volume"| Low["df shrinks toward 0\n(piecewise linear)"]
-    High --> New["newScore = score * df"]
-    Low --> New
-```
+### Change 2: fairness re-ranking
 
-2. **Fairness re-ranking, for infrequent vs. frequent members.** Built on LinkedIn's own Fairness Toolkit (LiFT), applying what the post calls "equality of opportunity and equalized odds" as re-ranking notions **(2021 post)** — standard fairness-ML criteria (defined below) — specifically to "fairly representing infrequent and frequent members by giving qualified IMs and FMs equal representation in recommendations" **(2021 post)**. The post does not publish the exact re-ranking algorithm or constraint parameters.
+Using the LinkedIn Fairness Toolkit, the team re-ranked connection suggestions according to equality of opportunity and equalized odds, giving qualified IMs and FMs equal representation. The post does not publish the method.
 
-### Sidebar — Equity re-ranking: equality of opportunity and equalized odds
+### Sidebar: equality of opportunity and equalized odds
 
-*(This is the first appearance in this repo of recommendation-system fairness/equity re-ranking as a concept; checked against Lessons 1–10 — Lesson 9's Concept 2 covers LLM-judge *evaluation* bias, a different problem (a judge model's own scoring blind spots), not a recommender's training-data feedback loop or a fairness-constrained re-ranking technique, so no existing lesson home applies.)*
+These are standard fairness criteria, which the post names without defining. Equality of opportunity asks that equally qualified members of different groups have the same true positive rate. Equalized odds also asks for the same false positive rate. Used as a re-ranking constraint, they adjust the final order so that a qualified IM is not ranked below an equally qualified FM because of the biased score.
 
-- **Why?** A model trained purely to maximize `P(connect)` has no mechanism built in to notice that it's systematically under-serving one group of members relative to another — Teaching point B's feedback loop is exactly what happens when nothing corrects for that. Re-ranking based on a fairness criterion is a way to intervene *after* the model produces its raw scores, without having to retrain the underlying model itself.
-- **What?** **Equality of opportunity**, as a general fairness-ML criterion (not a formula the 2021 post itself publishes — this is the standard definition of the term, included here because the post names the criterion without defining it), requires that qualified members of different groups (here, infrequent vs. frequent members) have an equal true-positive rate — an equally qualified IM and FM should be equally likely to actually get a recommendation that leads to a connection. **Equalized odds** is a stricter version requiring both the true-positive rate *and* the false-positive rate to match across groups. Applying either as a re-ranking constraint means: after the base model scores every candidate, the final ranking is adjusted so that qualified members from the disadvantaged group (IMs) are not systematically ranked lower than equally-qualified members from the advantaged group (FMs), rather than leaving the ranking as whatever the raw, feedback-loop-biased `P(connect)` score alone would produce.
-- **How?** The 2021 post doesn't publish the exact mechanics, but the conceptual shape (diagrammed below) is structurally the same "insert a correction pass after the base model's raw score" shape as the impression-decay re-ranker above — just correcting for member-frequency-group disparity instead of recipient invitation-volume.
+### Trade-offs considered
 
-```mermaid
-flowchart LR
-    Base["Base model raw ranking\n(Edge-FPR + SPR, Step 4)"] --> Check{"Qualified IM ranked\nbelow equally-qualified FM?"}
-    Check -->|"No"| Keep["Keep ranking"]
-    Check -->|"Yes"| Adjust["Re-rank: equalize\ntrue-positive rate (IM vs FM)"]
-    Adjust --> Final["Fairness-corrected\nfinal ranking"]
-```
-
-**The trade-off, stated explicitly, because it's this capstone's whole point.**
-
-- This is a real, LinkedIn-documented case of deliberately not shipping the raw `P(connect)`-maximizing ranking, on the theory that doing so would entrench the FM-favoring feedback loop Teaching point B describes.
-- It is not a free win measured purely on the system's own original objective: the post is explicit that engagement metrics like invitations sent were expected to decrease from the impression-decay change specifically because fewer invitations get sent once over-recommended recipients are deprioritized, and the team proceeded anyway, judging the user-experience and equity goals worth that expected cost.
-- For the IM/FM fairness re-ranking specifically, the post reports (Step 6) that the outcome was better than the team's own stated prior expectation — not a confirmed, acknowledged loss on the raw objective the way the decay change's trade-off is.
-
-**Trade-offs considered (Step 4, overall):** Keeping Edge-FPR and SPR fully decoupled (2020 post, confirmed) avoids a tight coupling where every Edge-FPR retraining forces an SPR retraining in lockstep, at the cost of needing an explicit calibration layer to keep their scores comparable at all — skip calibration, and SPR is combining numbers that don't mean the same thing across entity types. Correcting for the IM/FM feedback loop via a post-hoc re-ranking pass, rather than retraining the base model on a rebalanced or reweighted dataset, is cheaper to iterate on and deploy independently of the base model's own training cadence — but it means the base model itself keeps learning from the same biased-by-construction data distribution every cycle, and the re-ranking pass has to keep correcting for a bias that's still being reinforced upstream, rather than removing the bias at its source.
+Decoupling the two phases speeds iteration and needs calibration. Re-ranking after the model is cheap to deploy and leaves the base model learning from the same biased data, so the correction has to keep running.
 
 ---
 
 ## Step 5: Serving Architecture
 
-**Delivering on Lesson 5's forward-reference.** Lesson 5's Concept 1 case-study pointer for this capstone states that LinkedIn's connection graph "is large enough that graph data at that scale has to be federated/sharded across the underlying storage layer — which is the infrastructure the triangle-closing graph feature... actually runs its queries against." Step 2's own arithmetic above (118 trillion naive 2-hop traversal steps/day, illustrative) is exactly the numeric case for why that's true, not just plausible. This section builds out concretely what that sharded storage layer and the triangle-closing queries running against it actually look like, following the same sharded-adjacency pattern Lesson 5's own Hands-On Walkthrough built for Pinterest's `pins` table.
+### What the team page says
 
-**Sharding the connection graph.** Following Lesson 5 Concept 1's sharding definition (splitting rows of one logical table across nodes by a shard key) applied to an edge list rather than a `pins` table:
+New PYMK results are pushed every day, and results are refreshed daily. Named infrastructure: the Voldemort key-value store, Azkaban for Hadoop workflows, and Apache Kafka for streaming *(source-confirmed)*. The page names no graph database and no sharding scheme.
+
+### A sharded edge-list design (illustrative)
+
+This section is a teaching design built on Step 2. It is not LinkedIn's architecture.
 
 ```sql
--- Sharded edge-list table for the CONNECTION edge type (bidirectional, per the 2020 post).
--- One row per directed half of each connection, so a lookup of "who is member X
--- connected to" is always a single-shard scan keyed on member_a_id.
 CREATE TABLE connections (
-    member_a_id    BIGINT    NOT NULL,
-    member_b_id    BIGINT    NOT NULL,
-    shard_key      SMALLINT  GENERATED ALWAYS AS (member_a_id % 2048) STORED,
-    connected_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (shard_key, member_a_id, member_b_id),
-    INDEX idx_member_a (shard_key, member_a_id)
+    member_a_id  BIGINT NOT NULL,
+    member_b_id  BIGINT NOT NULL,
+    shard_key    SMALLINT GENERATED ALWAYS AS (member_a_id % 2048) STORED,
+    PRIMARY KEY (shard_key, member_a_id, member_b_id)
 );
--- Each CONNECTION edge is stored twice -- (A, B) and (B, A) -- so that
--- "give me member X's direct connections" is always answerable from X's own
--- shard, without needing to know which side of the original edge X was on.
+-- each connection is stored twice, as (A, B) and (B, A)
 ```
 
-`2048` shards here is illustrative, sized against Step 2's own arithmetic: at roughly 740 million members (illustrative anchor) and ~400 direct connections/member (illustrative), the full doubled edge list is on the order of `740,000,000 × 400 × 2 ≈ 5.9 × 10^11` rows — sharding that count down to roughly 2048 pieces keeps each shard's row count in the low hundreds of millions, the same target-headroom reasoning Lesson 5's own worked example used for Pinterest's `pins` table, just applied to an edge list instead of an item table.
+Rows number 2.8 × 10^11, about 137 million per shard across 2,048 shards, and about 3.3 GB per shard at 24 bytes a row. Capacity alone would need very few shards. The shard count is set by throughput: 3.2 million lookups a second is about 162 nodes at the assumed speed, so 2,048 shards work as units of placement, about 13 per node.
 
-**The triangle-closing candidate query, as a cross-shard scatter-gather — the actual infrastructure cost Lesson 5's pointer was about.** Step 3's `mutual_connection_candidates` function assumed `adjacency` was one convenient in-memory dict. Against the sharded table above, that same 2-hop traversal becomes exactly the kind of cross-shard query Lesson 5's Concept 1 already names as sharding's own structural cost: *"a query that needs rows from more than one shard... now has to be assembled by the application from multiple shard round-trips instead of one SQL query."* Concretely, for a 2-hop triangle-closing lookup:
+### Triangle closing across shards
+
+One member's direct connections sit on one shard. Each friend's list sits on another shard, keyed by the friend's ID. So one member's expansion is one home-shard query plus up to one query per friend.
 
 ```python
-def triangle_closing_candidates(member_id: int, shard_router, num_shards: int = 2048) -> dict[int, int]:
-    """Cross-shard triangle-closing: member_id's direct connections can live on
-    many different shards (their own member IDs, not member_id's), so a full
-    friends-of-friends expansion is a scatter-gather across shards, not a
-    single-shard query -- this is the concrete cost Lesson 5 Concept 1's
-    sharding trade-off (cross-shard queries require application-level
-    assembly) imposes on triangle-closing specifically.
-    """
-    home_shard = member_id % num_shards
-    direct_connections = shard_router.query(
-        shard=home_shard,
-        sql="SELECT member_b_id FROM connections WHERE shard_key = %s AND member_a_id = %s",
-        params=(home_shard, member_id),
-    )
-    direct_set = set(direct_connections)
-
-    mutual_count: dict[int, int] = {}
-    for friend_id in direct_connections:
-        # Scatter: friend_id's own shard is friend_id % num_shards, which is
-        # almost never member_id's own shard -- this is the round-trip Lesson
-        # 4 warns a cross-shard query pays, repeated once per direct connection.
-        friend_shard = friend_id % num_shards
-        second_degree = shard_router.query(
-            shard=friend_shard,
-            sql="SELECT member_b_id FROM connections WHERE shard_key = %s AND member_a_id = %s",
-            params=(friend_shard, friend_id),
-        )
-        # Gather: accumulate mutual-connection counts across every scattered round-trip.
-        for candidate_id in second_degree:
-            if candidate_id == member_id or candidate_id in direct_set:
-                continue
-            mutual_count[candidate_id] = mutual_count.get(candidate_id, 0) + 1
-
-    return mutual_count
+def candidates(member: int, router, shards: int = 2048) -> dict[int, int]:
+    sql = "SELECT member_b_id FROM connections WHERE shard_key = %s AND member_a_id = %s"
+    direct = set(router.query(member % shards, sql, (member % shards, member)))
+    mutual: dict[int, int] = {}
+    for friend in direct:
+        rows = router.query(friend % shards, sql, (friend % shards, friend))
+        for other in rows:
+            if other != member and other not in direct:
+                mutual[other] = mutual.get(other, 0) + 1
+    return mutual
 ```
 
-One call to `triangle_closing_candidates` now costs one single-shard query (the member's own direct connections) plus up to `len(direct_connections)` further single-shard round-trips (one per friend's own shard) — a real, countable infrastructure cost directly traceable to sharding, which is exactly why the team page's confirmed "daily" processing cadence (Step 2) makes sense as a design choice: running this scatter-gather as a recurring **batch** job against the full member base, rather than live on every page load, amortizes the round-trip cost across a wide processing window instead of paying it inside a single request's latency budget.
+At 400 friends that is 401 queries for one member. A batch job pays this cost across a daily window, as the page's daily cadence suggests. An alternative that avoids per-member lookups is a self-join of the edge list on the middle member, which Hadoop-style jobs do. Its raw output is the 1.12 × 10^14 walks, so counting mutual connections and dropping weak candidates has to happen while the data is being shuffled.
 
-```mermaid
-flowchart TB
-    Q["triangle_closing_candidates(member_id)"] --> Home["Single-shard query:\nmember_id's own shard\n(direct connections)"]
-    Home --> Scatter["Scatter: one query per\ndirect connection's own shard\n(friend_id % 2048)"]
-    Scatter --> Gather["Gather: accumulate\nmutual-connection counts\nacross all round-trips"]
-    Gather --> Result["Candidate pool with\nmutual-connection counts"]
-```
+### Where real time begins
 
-**Where the real-time path picks up.**
-
-- The batch-computed candidate pool (triangle-closing plus the team page's other features — organizational overlap, age, geography) feeds Edge-FPR's offline scoring.
-- Edge-FPR and SPR's calibrated, aggregated scores (Step 4) are what actually get read when a member opens the MyNetwork tab.
-- Per-viewer impression guarantees are applied at request time — the 2020 post confirms these are enforced "at a per-viewer and per-edge-type level," explicitly rejecting a single global guarantee per cohort as "far too complex to operationalize" **(2020 post)**.
-- i.e., real-time serving reads already-scored candidates and applies presentation constraints — it doesn't recompute triangle-closing or Edge-FPR per page load (diagrammed below).
+The pages do not describe the online path. The 2020 post says impression guarantees are given per viewer and per edge type. A reasonable reading is that scored candidates are produced daily and request-time logic applies guarantees and the discount for recipients. That is this document's inference.
 
 ```mermaid
 flowchart LR
-    subgraph Offline["Offline / batch (daily cadence)"]
-        TC["Triangle-closing +\norg-overlap/age/geography features"] --> EFPR["Edge-FPR offline scoring"]
-        EFPR --> SPR2["SPR calibration + aggregation"]
+    subgraph Daily["Daily batch"]
+        TC["Candidates + features"] --> EFPR["Edge-FPR scoring"]
+        EFPR --> SPR2["Calibration + SPR"]
     end
-    SPR2 --> Store["Scored, ranked\ncandidate pool"]
-    Store --> RT["Real-time: member opens\nMyNetwork tab"]
-    RT --> Guard["Apply per-viewer,\nper-edge-type impression guarantees"]
-    Guard --> Show["Recommendations shown\n(horizontal carousel)"]
+    SPR2 --> STORE["Scored candidates"]
+    STORE --> RT["Member opens My Network"]
+    RT --> RULES["Per-viewer guarantees, recipient decay"]
+    RULES --> SHOW["Carousels"]
 ```
 
-**Trade-offs considered:** Sharding the connection graph by `member_a_id` makes "give me X's own direct connections" a single-shard query, which is the lookup every traversal step needs most often — but it makes triangle-closing's second hop an unavoidable scatter-gather, since a friend's own connections live on a shard keyed by *their* ID, not the originating member's. An alternative sharding scheme that tried to colocate a member with their friends-of-friends would only move the problem, not remove it, since any member has friends spread across essentially the whole shard space once the graph is large enough — this is the direct cost Lesson 5 Concept 1 already names for any cross-shard query, now made concrete for a specific two-hop graph traversal rather than left abstract. Running triangle-closing as a recurring batch job (daily, per the team page) rather than live-per-request trades candidate-pool freshness (a connection formed an hour ago won't immediately ripple into fresh triangle-closing candidates for that member's own friends) for a workload that's actually schedulable within the sharded infrastructure's real throughput limits — the same batch-vs-real-time trade-off Lesson 5's caching material frames generally, applied here to graph traversal instead of a cache-population decision.
+### Decision table
+
+| Decision | This system's choice | Choose differently when |
+|---|---|---|
+| Candidate source | Friends of friends, then pair features | Add other sources if mutual connections miss people |
+| Model | Logistic regression over hundreds of features (team page) | Non-linear models, which the 2021 post mentions |
+| Ranking across types | A separate second-pass ranker with calibration | One model if there is a single entity type |
+| Coupling | Independent first and second pass | Tight coupling only if accuracy outweighs speed of iteration |
+| Fairness | Re-rank after scoring | Reweight training data to correct the source |
+| Candidate computation | Daily batch | Streaming updates if freshness matters more than cost |
+
+### Trade-offs considered
+
+Sharding by the first member makes one member's friends a single-shard read and the second hop a scatter. A daily batch trades freshness for a workload that fits the throughput. A new connection does not reach the candidates of the member's friends until the next run.
 
 ---
 
-## Step 6: Evaluation, Monitoring, and Iteration
+## Step 6: Evaluation, Monitoring and Iteration
 
-**What the sources confirm about offline evaluation — and the honest gap.** Neither the 2020 post, the 2021 post, nor the team page names a specific offline metric (no AUC, no precision@k, no NDCG) for PYMK's own model. This is a genuine gap relative to several other capstones in this repo (e.g. capstone #3's Holdout MAP, capstone #4's NDCG) and is reported here as a limitation of what these three sources confirm, not filled in with an invented metric name.
+### Offline
 
-**Online evaluation — the 2020 post's own qualitative result.** The 2020 post reports that its heterogeneous recommender's A/B test produced "an increase in the number of engaged members and a significant increase in the downstream-interactions of members" **(2020 post)** — a confirmed, but entirely unquantified, directional result; no percentage or magnitude is given.
+None of the pages names an offline metric for PYMK's model. Evaluation reported is by A/B test.
 
-**Online evaluation — the 2021 equity post's quantified results, the sharpest numbers either source gives.**
+### Online results
 
-- Impression-decay change (overloaded recipients) **(2021 post)**:
-  - Overloaded recipients reduced by **50%**.
-  - Connection requests sent fell by **1%**.
-  - Recipient-side sessions rose by **1%**.
-  - Sender-side session impact: neutral.
-  - Net session result across both sides: a **1% win**.
-- IM/FM fairness re-ranking **(2021 post)**:
-  - Infrequent members: **5.44%** increase in invitations sent; **4.8%** increase in connections made.
-  - Frequent members: both metrics neutral.
-- The post frames the FM-neutral result as better than its own prior expectation — it states that shifting invitations from the FM group to the IM group would typically be expected to produce a metric increase for IMs and a corresponding decrease for FMs, and reports the observed FM-neutral outcome as evidence that overall recommendation quality improved, rather than that gains for IMs simply came at FMs' direct expense **(2021 post)**.
+The 2021 post's results *(source-confirmed)*:
 
-**The equity-metric monitoring the 2021 post introduces — named honestly as cohort-segmented metrics, not one formula-defined fairness score.**
+| Change | Result |
+|---|---|
+| Impression decay | Overloaded recipients reduced by 50%, with survey results saying the experience of sending and receiving requests improved. Connection requests sent fell 1%. Sessions from the recipient side rose 1%. Sender-side sessions were neutral. Overall a 1% session win. |
+| Fairness re-ranking | Invitations sent to IMs rose 5.44% and connections made by IMs rose 4.8%. Metrics for FMs stayed neutral. |
 
-- The post does not define a single named equity metric with an explicit formula the way, for example, NDCG is formally defined (capstone #4).
-- What it does instead, confirmed directly by the structure of its own reported results above, is **segment its standard engagement metrics (invitations sent, connections made, sessions) by member-frequency cohort (IM vs. FM) and monitor both cohorts' numbers separately**, rather than reporting one platform-wide average that could hide a gain for one group masking a loss for the other.
-- This is the concrete, if less formally named, monitoring practice this capstone's teaching point is built on: watching whether a change helps the disadvantaged cohort (IMs) without an outsized, uncorrected cost to the advantaged cohort (FMs) — exactly the comparison the post's own FM-neutral/IM-positive result reports.
-- The post names its evaluation challenge directly too: recipient-side impact is harder to measure than sender-side, because a recipient can receive invitations from many different senders at once — which is why the team built a separate attribution framework specifically to credit a recipient-side session back to the sender whose invitation prompted it **(2021 post)**.
+The post explains the 1% recipient gain this way: members with fewer invitations were receiving more, and invitations are more efficient at driving engagement for them. It reads the neutral FM metrics as a sign that recommendation quality improved overall, since moving invitations from FMs to IMs would typically lower the FM metrics.
 
-**The feedback loop back into Step 3.** Every new connection becomes a new positive training example (Step 1's link-prediction framing) — but, per Teaching point B, unevenly: a connection formed by an already-frequent member reinforces FM-overrepresentation (diagrammed below), the structural reason the 2021 post's interventions re-rank on top of the base model rather than wait for the next training cycle to self-correct.
+Treat that reading with care. The post gives no confidence intervals or effect sizes for the neutral result, and a neutral measurement is not proof of no change. It also reports that invitations sent to IMs rose, and says nothing on whether those invitations were wanted.
 
-```mermaid
-flowchart LR
-    NewConn["New connection formed"] --> Label["New positive training example\n(Step 1 link-prediction label)"]
-    Label --> Retrain["Next training cycle"]
-    Retrain --> Bias{"Connection formed\nby an FM or an IM?"}
-    Bias -->|"FM"| Reinforce["Reinforces FM\noverrepresentation (Step 4)"]
-    Bias -->|"IM"| Thin["Thinner signal,\nstill underrepresented"]
-    Reinforce --> Rerank["2021 re-ranking corrections\napplied on top of base model"]
-```
+### Measuring the recipient side
 
-**Failure modes:**
+Recipient impact is harder to attribute, because a recipient can receive invitations from several senders. The team built an attribution framework: if a recipient gets a notification that Sender A wants to connect and then comes to accept it, the session goes to A. If the recipient comes on their own and goes straight to Sender B's invitation, it goes to B *(source-confirmed)*.
 
-- The cold-start gap named in Step 3 — a brand-new member has no direct connections for triangle-closing to expand from, so their early candidate pool is thin by construction (**this document's own inference**, not a claim either source states outright).
-- The overloaded-recipient problem the 2021 post's decay re-ranker addresses directly.
-- The IM/FM representation gap the same post's fairness re-ranking addresses directly.
-- More generally: any production system trained on its own historical recommendation outcomes risks the same closed feedback loop Teaching point B names, in any domain, not just PYMK — this capstone's broader, portable lesson.
+### Monitoring by cohort
 
-**Trade-offs considered:** Relying on live A/B results (both posts' own primary evidence) rather than a named offline metric means every iteration's real cost/benefit can only be confirmed after it's already live and affecting real members — slower and riskier than capstone #3's or #4's offline-metric-first discipline, but it's also the only way the 2021 post could have actually confirmed its central, counter-intuitive result (FM engagement staying neutral rather than dropping, when a naive zero-sum framing would have predicted a drop) — an offline metric computed against a static holdout set would have had no obvious way to measure a dynamic, platform-wide shift in *who* gets recommended to whom at all. Segmenting metrics by IM/FM cohort rather than reporting one platform-wide average costs real additional measurement and attribution infrastructure (the recipient-side attribution framework, confirmed above) — but a platform-wide average is exactly the kind of number that would have hidden the original FM-overrepresentation problem in the first place, since FMs' large absolute volume would dominate an unsegmented average and mask what was happening to IMs underneath it.
+The post reports its standard metrics, invitations, connections and sessions, split by cohort. It does not define a single equity metric. The practice that follows is to read each cohort separately, since an average over all members is dominated by frequent members and would hide what happens to infrequent ones.
+
+### What the pages do not settle
+
+- Cannibalization across edge types, which the 2020 post names without numbers.
+- Whether the 50% fall in overloaded recipients is the right target. The post states the aim and not a threshold.
+- Plans: short and long-term tests of changing exposure for equality of opportunity, and comparisons by protected attributes such as gender.
+
+### What breaks first at 10×
+
+| Quantity | At 10× | Reason |
+|---|---|---|
+| Edge rows | 2.8 × 10^12 | Members times degree |
+| Daily lookups | 3.2 × 10^7 a second, or 1,620 nodes at the assumed speed | One lookup per edge row |
+| Raw 2-hop walks | Up to 100 times at 10 times the degree | Grows with the square of degree |
+| Candidate pairs | Depends on the filtering | The pages do not say |
+
+If degree grows 10 times, the 2-hop count grows 100 times. If only members grow, it grows 10 times. The team page says processing grows much faster than the site, which matches the degree case.
+
+### Risks
+
+- Cold start for new members, by construction.
+- A feedback loop in the training data that favors frequent members.
+- Cannibalization across edge types, named by the 2020 post.
+- Attribution error on the recipient side.
+
+### Trade-offs considered
+
+A/B tests are the only evidence the pages give, and they show a dynamic shift in who is recommended that a fixed offline set would not. Splitting results by cohort costs measurement work and keeps a gain for one group from hiding a loss for another.
 
 ---
 
-## Source(s) and Further Reading
+## Sources and Further Reading
 
-- LinkedIn Engineering, *"Building a Heterogeneous Social Network Recommendation System,"* Oct. 6, 2020 — **primary**; source of every claim tagged (2020 post) above, including the CONNECTION/FOLLOW/SUBSCRIBE edge-type taxonomy, the Edge-FPR/SPR two-phase architecture, calibration and importance-factor mechanics, the horizontal-carousel presentation detail, the per-viewer impression-guarantee policy, and the qualitative A/B result. **Honesty note, repeated from the Confidence section above:** this post does not mention triangle-closing — triangle-closing is instead confirmed by the PYMK team page below, not by this post.
-- LinkedIn Engineering, *"Optimizing People You May Know (PYMK) for Equity in Network Creation,"* Aug. 5, 2021 — **primary**; source of every claim tagged (2021 post) above, including the FM-overrepresentation feedback loop, the impression-decay re-ranker and its `newScore = score * df` mechanism, the LiFT-based IM/FM fairness re-ranking, and every quantified A/B result in Step 6 (50% overloaded-recipient reduction, 1% invitation/session shifts, 5.44%/4.8% IM gains, FM-neutral result).
-- LinkedIn Engineering, PYMK team overview page (`engineering.linkedin.com/teams/data/artificial-intelligence/people-you-may-know`) — **primary**; the actual source of the triangle-closing definition, the logistic-regression model-family confirmation for PYMK specifically, the organizational-overlap/age/geography feature set, and the "100s of terabytes / 100s of billions of potential connections / billions of samples / hundreds of features" scale figures used throughout Step 2.
-- VentureBeat, coverage of the 2021 equity post — **secondary**; cited only for the "rich getting richer" phrase attributed there to LinkedIn product manager Albert Cui, explicitly flagged above as not appearing in the primary 2021 post's own text.
-- Lesson 5 (`lessons/lesson-5-data-layer.md`), Concept 1 — the sharding definition and this capstone's own case-study pointer (quoted and built out concretely in Step 5 above), and Concept 2 — the graph-database definition this capstone's "connection graph" is a direct application of, both referenced rather than re-derived.
-- `case-studies/video-recommendation/README.md` (capstone #3) — referenced in Step 4 for the structural parallel between Edge-FPR (a per-type first-pass scorer) and that capstone's own two-stage retrieval-then-rank glossary entry, as a related but distinct architecture (cross-entity-type score calibration vs. corpus-scale funnel narrowing).
-- `appendix/glossary.md` — new entries added for **heterogeneous network**, **triangle-closing**, and **equity re-ranking (equality of opportunity / equalized odds)**; this capstone defines all three in full on first use above rather than assuming familiarity. **Edge-FPR / SPR two-phase ranking** and **calibration (cross-model-type score calibration)** are also defined in full on first use (Step 4), but, as a judgment call consistent with capstone #3's own precedent for naming a related-but-distinct architecture inline rather than boxing it, were not given their own Sidebar or glossary entry — they're LinkedIn's own internal terminology for a variant of the already-glossaried two-stage retrieval-then-rank pattern, not a genuinely new architectural idea this repo hasn't touched at all.
+- LinkedIn Engineering, "Building a Heterogeneous Social Network Recommendation System," October 6, 2020. The source for the edge types, the two phases, calibration, importance factors, the random bucket, impression guarantees and the qualitative result. It does not mention triangle closing or mutual connections.
+- LinkedIn Engineering, "Optimizing People You May Know (PYMK) for Equity in Network Creation," August 5, 2021. The source for the feedback loop, impression decay, the fairness re-ranking and the quantified results.
+- LinkedIn Engineering, People You May Know team page. The source for the binary classification framing, triangle closing, the features, logistic regression, the scale statements, the named infrastructure and the daily refresh. It cites the WWW 2013 organizational-overlap work and the KDD 2014 impression discounting paper, which were not read for this document.
+- [Lesson 5](../../lessons/lesson-5-data-layer.md), Concepts 1 and 2: sharding and graph databases.
+- [Capstone #3, Video Recommendation](../video-recommendation/README.md): a related two-stage design.
+- [Glossary](../../appendix/glossary.md): heterogeneous network, triangle closing, equity re-ranking.
+
+Labels: *(source-confirmed)* is on one of the three pages. *(illustrative)* is a planning assumption or design of this document.

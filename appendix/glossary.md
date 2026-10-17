@@ -179,7 +179,7 @@ Every term introduced across the 11 lessons and the `case-studies/` capstones, o
 - **Method** — the verb at the start of an HTTP request stating what kind of action is being asked for, commonly GET (retrieve something) or POST (submit data, often to create something or trigger an action).
 - **Microservices** — an architectural style splitting an application into a suite of small, independently deployable services, each in its own process, communicating over a network.
 - **MicroVM** — an isolation boundary giving each sandboxed environment its own kernel rather than sharing the host's, stronger than a plain container while far lighter than a traditional full VM.
-- **Model cascade (cheap-filter-then-expensive-judge chain)** — a multi-tier inference pipeline where a fast, cheap model screens every item first, escalating only flagged/uncertain items to a slower, expensive model — used in `case-studies/harmful-content-detection`'s LLM-era extension to cut judge-tier cost by roughly 90% in its own worked example.
+- **Model cascade (cheap-filter-then-expensive-judge chain)** — a multi-tier inference pipeline where a fast, cheap model screens every item first, escalating only flagged/uncertain items to a slower, expensive model — used in `case-studies/harmful-content-detection`'s LLM-era extension to cut judge-tier spend by 92% in its own worked example; the total saving depends on how cheaply the first tier runs over a stream.
 - **Model routing / gateway** — a layer in front of one or more models that decides, per request, which model/provider handles it based on cost, latency, or capability, often also providing a unified API, rate limiting, and failover.
 - **Monolith** — an application built and deployed as a single, unified process, where every piece of functionality runs and deploys together.
 - **Multi-agent orchestration** — an architecture where more than one agent, often with distinct roles (planner, executor, validator), collaborates on a single task, coordinated by a supervisor or a hand-off protocol.
@@ -195,7 +195,7 @@ Every term introduced across the 11 lessons and the `case-studies/` capstones, o
 ### O
 
 - **Observability** — the property that a system's internal behavior can be understood from the data it emits (logs, metrics, traces/spans) without having anticipated the exact question in advance.
-- **Online learning** — a training paradigm where a model updates its parameters immediately after each training example arrives, rather than training over a fixed dataset in repeated passes — used in `case-studies/ctr-prediction` so Google's CTR model can incorporate new clicks within minutes.
+- **Online learning** — a training paradigm where a model updates its parameters immediately after each training example arrives, rather than training over a fixed dataset in repeated passes — used in `case-studies/ctr-prediction` so Google's CTR model can update as new clicks and non-clicks are observed.
 - **OSWorld** — a benchmark and execution environment evaluating an agent's ability to complete real computer tasks via free-form mouse/keyboard control, graded by an automated check of the environment's real final state — used in `case-studies/computer-use-agent` as the benchmark Anthropic's computer-use announcement reports results against.
 
 ### P

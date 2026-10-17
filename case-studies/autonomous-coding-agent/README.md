@@ -1,122 +1,171 @@
-# Capstone #13: Autonomous Coding Agent — Devin-Style Plan-and-Execute Software Engineering
+# Capstone #13: Autonomous Coding Agent — Devin-Style Plan-and-Execute
 
-**Source(s):** Primary — Cognition Labs, *"Introducing Devin,"* March 2024 (originally published at cognition.ai/blog/introducing-devin; the domain now redirects to cognition.com/blog/introducing-devin — confirmed by directly fetching the live page, not secondhand coverage). Secondary/foundational — Jiménez et al., *"SWE-bench: Can Language Models Resolve Real-World GitHub Issues?,"* ICLR 2024 (arXiv:2310.06770) — not Cognition's own source, but the benchmark's own original paper, needed here to define SWE-bench and "resolve rate" accurately rather than taking Cognition's framing of them on faith.
+## At a glance
 
-**Confidence:** The qualitative architecture claims — sandboxed shell/editor/browser access, the agent's ability to "plan and execute complex engineering tasks requiring thousands of decisions," and real-time progress reporting — are **(source-confirmed)**: verified by fetching the live Cognition post directly. The SWE-bench resolve-rate numbers are **also (source-confirmed)** as a direct quote, but per this document's title, they must be read as **Cognition's own reported benchmark claim, not an independently verified or peer-reviewed result** — the post itself states a more detailed technical report was still forthcoming at publication time, and no independent SWE-bench technical report from Cognition could be found as of this writing. The post also attaches an asterisk to its own headline number with two methodology caveats, confirmed directly from the page and quoted in full in Step 1's Sidebar below — this document treats those caveats as load-bearing, not as fine print to skip past. Every number *not* traceable to either source is explicitly tagged **(illustrative)** throughout, including all of Step 2's back-of-envelope figures, which Cognition's post does not publish any version of.
+| Topic | Summary |
+|---|---|
+| Sources | Cognition Labs, "Introducing Devin" (March 2024), read in full from the live page at cognition.com/blog/introducing-devin (redirected from the original cognition.ai domain). Jiménez et al., "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?" (ICLR 2024, arXiv:2310.06770), for the benchmark's own definition. |
+| Problem | Given a coding task and real access to a codebase, decide and run a sequence of actions — read files, run shell commands, edit code, run tests, browse docs — and continue to a verified solution, without a human approving each step. |
+| Not single-shot | A completion tool makes one model call and stops. This agent runs a loop that observes the result of each action and keeps going, so it can catch and fix its own mistakes mid-task. |
+| What Devin claims | "Plan and execute complex engineering tasks requiring thousands of decisions"; shell, code editor and browser inside a sandboxed environment; real-time progress reporting *(source-confirmed)*. |
+| The headline number | Devin resolves 13.86% of SWE-bench issues end to end, against a prior best of 1.96%, and 4.80% for models given the exact files to edit — Cognition's own launch claim, on a random 25% subset, Devin unassisted while the baselines were assisted *(source-confirmed, self-reported)*. |
+| Not published | Devin's actual architecture, tool-call counts, task durations, concurrency and cost. Every sizing figure in Step 2 and the designs in Steps 3–5 are this document's own *(illustrative)*. |
+| First to break | Error compounding over many steps. A 95%-reliable step run 50 times in a row finishes clean under 8% of the time, which is why "fix mistakes" is load-bearing, not decoration. |
+| Easy-to-miss traps | A benchmark score is not a merge-ready PR. 13.86% was a 25% subset (~573 tasks, ~79 solved), unassisted-vs-assisted, no independent report. The round-trip count, not the sandbox, drives cost. |
+| Practice PDFs | [Study edition](../../capstone-study-and-mock/autonomous-coding-agent/capstone13_autonomous_coding_agent_study.pdf) · [Mock interview](../../capstone-study-and-mock/autonomous-coding-agent/capstone13_autonomous_coding_agent_mock.pdf) |
 
-**Scope note:** This capstone covers an agent that autonomously plans and executes a *multi-step* software engineering task end to end — reading a codebase, running shell commands, editing files, running tests, and (per the source) using a browser, across a session that can run for minutes to hours without a human approving each individual step. It does **not** cover: training or fine-tuning the underlying LLM (this capstone treats the model as an off-the-shelf, already-trained component, the same framing capstone #10's own Scope note uses); the model-serving infrastructure underneath that LLM (capstone #10's territory, referenced not re-derived); a GUI-driven **computer-use agent** that operates a screen via screenshots and simulated mouse/keyboard input instead of direct shell/file/API access (capstone #14's distinct architecture); or the detailed mechanics of prompt injection, output-guardrail, or human-in-the-loop-approval design (Lesson 8's F1 and F4 territory, referenced not re-derived).
+Evidence labels used below: *(source-confirmed)* means the claim or quote is in the named primary source. *(illustrative)* means it is this document's own planning assumption or design. Cognition's SWE-bench figures are its own launch claim, on a subset, with no independent technical report found as of this writing.
+
+### Concepts this case study builds on
+
+| Concept | Where it is taught | One-line recap |
+|---|---|---|
+| Plan-and-execute, ReAct, reflection | [Lesson 1, Group D](../../lessons/lesson-1-ai-fundamentals-refresher.md#d-agent-architecture) | Control-flow patterns for how an agent decides and acts across steps. |
+| State and checkpointing | [Lesson 1, Group E](../../lessons/lesson-1-ai-fundamentals-refresher.md#e-memory-and-state) | Save progress so a long run can resume instead of restarting. |
+| Task queues and idempotency | [Lesson 6, Concept 1](../../lessons/lesson-6-async-and-communication.md#concept-1-message-queues-vs-task-queues) | Jobs with status and retries; retried work must be safe to repeat. |
+| Async over synchronous REST | [Lesson 6, Concept 4](../../lessons/lesson-6-async-and-communication.md#concept-4-rpc-vs-rest) | A task longer than a gateway's idle timeout cannot be one held-open request. |
+| Least privilege and blast radius | [Lesson 7, Concept 3](../../lessons/lesson-7-application-architecture-and-security.md#concept-3-core-security--encryption-input-sanitization-least-privilege) | Scope each credential to the least it needs; bound what a breach reaches. |
+| Back-of-envelope method | [Lesson 7, Concept 4](../../lessons/lesson-7-application-architecture-and-security.md#concept-4-back-of-envelope-estimation-technique--latency-numbers) | State assumptions, decompose, carry units, sanity-check, name the sensitive input. |
+| Sandboxing and multi-tenant isolation | [Lesson 8, Concept 2](../../lessons/lesson-8-safety-and-isolation.md#concept-2-sandboxing-agent-execution) and [Concept 5](../../lessons/lesson-8-safety-and-isolation.md#concept-5-multi-tenant-isolation) | Isolate one untrusted run from the host, and one tenant from another. |
 
 ---
 
 ## Step 1: Clarify Requirements & Frame the ML/AI Objective
 
-**The actual objective — multi-step autonomous task completion, not single-shot code generation.** A single-shot code-generation tool (e.g. an inline-completion assistant) takes one prompt and produces one artifact in one model call, with no execution or verification loop — if it's wrong, nothing inside the tool catches that. This capstone's objective is structurally different: given a coding task (a bug report, a GitHub issue, a feature request) and real access to a codebase, the agent has to autonomously decide a sequence of actions — read files, run shell commands, edit code, run tests, consult documentation — observe the result of each, and continue until it produces a complete, verified solution, without a human approving each individual step. The source names the scale directly **(source-confirmed)**: Devin is described as able to "plan and execute complex engineering tasks requiring thousands of decisions," "recall relevant context at every step, learn over time, and fix mistakes." The objective being optimized is therefore end-to-end task completion across many sequential decisions, not the quality of any single generated artifact.
+### The objective: multi-step completion, not single-shot generation
 
-**What counts as ground truth / feedback signal — two different bars, not one.**
+A single-shot code tool takes one prompt and returns one artifact in one model call, with no execution or verification loop. If it is wrong, nothing inside the tool catches that. This capstone's objective is different in shape: given a task and real access to a codebase, the agent decides a sequence of actions, observes the result of each, and continues until it has a complete, verified solution, with no human approving each step.
 
-1. **Benchmark ground truth: SWE-bench resolve rate.**
+Cognition names the scale directly: Devin "can plan and execute complex engineering tasks requiring thousands of decisions," and "can recall relevant context at every step, learn over time, and fix mistakes" *(source-confirmed)*. The thing being optimised is end-to-end completion across many sequential decisions, not the quality of any one generated artifact.
 
-   **Sidebar — SWE-bench and resolve rate.** *(First appearance in this repo of either concept; it isn't classic infra Lessons 3-7 curate down to, and it isn't already taught in Lesson 1 either, so this gets the full inline Sidebar treatment plus a glossary entry, rather than a lesson link that doesn't exist.)*
-   - **Why?** A model's own claim that it "fixed a bug" is meaningless without an objective, automatable way to check whether the fix actually works — the AI-agent equivalent of the question Lesson 1's Concept A1 already raises generally (non-determinism means you can't just eyeball one output and call it done).
-   - **What?** **SWE-bench** is a benchmark, from Jiménez et al.'s ICLR 2024 paper, consisting of **2,294 real GitHub issues** drawn from **12 popular open-source Python repositories**, each paired with the actual human-written pull request that originally fixed it. A model is given the issue description and the repository at the commit just before the fix, and has to produce its own patch. **Resolve rate** is the percentage of a benchmark's tasks a model's patch actually "resolves" under the benchmark's own grading criterion — for SWE-bench specifically, grading is **test-based, not a human or LLM judgment of whether the patch looks right**: the candidate patch is applied and the repository's real test suite is run; the task counts as resolved only if every test that was failing before the fix ("fail-to-pass" tests) now passes, *and* no test that was already passing ("pass-to-pass" tests) is broken by it. A single regression anywhere fails the whole task.
-   - **How?** Applied to this capstone: Cognition's own announcement reports Devin's resolve rate on SWE-bench as the headline evidence for its multi-step-task-completion capability (Step 6 covers the exact figures and their caveats). Nothing about SWE-bench's grading mechanism is Cognition-specific — it's the benchmark's own, independently defined pass/fail rule, applied here to one agent's submitted patches.
+### Two bars for "done", not one
 
-2. **Real-world ground truth: a PR that actually passes CI and gets merged.** SWE-bench's test-based grading is strictly narrower than what a real engineering team requires before merging a fix — a human reviewer also judges code style, whether the fix addresses the issue's actual intent (not just its symptom), and whether it introduces risk the existing test suite doesn't cover. A patch can pass every fail-to-pass and pass-to-pass test in SWE-bench's grading and still be a fix a human reviewer would reasonably reject. This capstone treats "a PR that passes CI and is accepted by a human reviewer" as the stricter, real-world bar that SWE-bench resolve rate is a cheaper, scalable, but genuinely narrower proxy for — not a replacement for it.
+**Benchmark ground truth.** SWE-bench resolve rate, defined in the sidebar below. It is a reproducible, test-based pass or fail that needs no human reviewer per run.
 
-**Explicitly out of scope:** training or fine-tuning the underlying LLM; the GPU/model-serving layer underneath it (capstone #10); a screenshot-driven computer-use control loop (capstone #14); the internal mechanics of prompt-injection defense or output guardrails (Lesson 8's F1/F4, referenced not re-derived); evaluating output quality/safety in the general LLM-content sense (Lesson 9's territory).
+**Real-world ground truth.** A pull request that passes CI and is accepted by a human reviewer. This is stricter: a reviewer also judges style, whether the fix addresses the issue's real intent rather than its symptom, and risk the existing tests do not cover. A patch can pass every SWE-bench test and still be a fix a reviewer would reject. Resolve rate is a cheaper, scalable, genuinely narrower proxy for this bar, not a replacement.
 
-**Trade-offs considered:** Framing the objective around multi-step completion rather than single-shot generation accepts a fundamentally larger failure surface — a single-shot generator either gets its one answer right or wrong in one model call's worth of risk, while a multi-step agent can go wrong at any one of dozens or hundreds of individual decisions, and those per-step error rates compound (Step 4 below makes this compounding concrete with real numbers, since it's also this capstone's central model-design trade-off, not just a Step 1 framing note). Choosing SWE-bench resolve rate as the primary offline metric buys a reproducible, automatable, test-based pass/fail signal that doesn't require a human reviewer for every evaluation run — but it's also a narrow slice of real engineering work (Python repositories only, issue-shaped tasks only, no architecture or design work, no code review of the *fix's* quality beyond "do the named tests pass") — which is exactly why this capstone also names the stricter CI-plus-human-review bar above rather than treating SWE-bench resolve rate as if it were a complete measure of "can this agent do a software engineer's job."
+### Sidebar: SWE-bench and resolve rate
+
+This is the first appearance of either term in this repo, so both get a full definition here and a glossary entry.
+
+**Why.** A model's own claim that it "fixed a bug" means nothing without an objective, automatable way to check whether the fix works — the agent version of the problem Lesson 1 raises generally: non-determinism means you cannot eyeball one output and call it done.
+
+**What.** SWE-bench, from Jiménez et al. (ICLR 2024), is a benchmark of 2,294 real GitHub issues drawn from 12 popular open-source Python repositories, each paired with the human-written pull request that originally fixed it. A model gets the issue text and the repository at the commit just before the fix, and must produce its own patch *(source-confirmed, SWE-bench paper)*.
+
+**How it grades.** Resolve rate is the share of tasks a patch resolves under the benchmark's own rule. Grading is test-based, not a human or model judgment of whether the patch looks right. The patch is applied and the repository's real test suite is run. A task counts as resolved only if every test that was failing before the fix (its **fail-to-pass** tests) now passes, and no test that was already passing (its **pass-to-pass** tests) breaks. A single regression fails the whole task *(source-confirmed, SWE-bench paper)*.
+
+### Out of scope
+
+Training or fine-tuning the underlying model (treated here as an off-the-shelf component, as capstone #10 does); the model-serving layer beneath it (capstone #10's territory); a screenshot-driven computer-use agent that operates a screen rather than shell, files and APIs directly (capstone #14); and the internal mechanics of prompt-injection defence or output guardrails (Lesson 8, referenced not re-derived).
+
+### Trade-offs
+
+Framing the objective around multi-step completion accepts a much larger failure surface. A single-shot generator is right or wrong in one call's worth of risk. A multi-step agent can go wrong at any one of dozens or hundreds of decisions, and those per-step errors compound (Step 4). Choosing resolve rate as the primary offline metric buys an automatable pass or fail, but it is a narrow slice of real work: Python only, issue-shaped tasks only, no design work, no review of the fix's quality beyond the named tests. That narrowness is exactly why the CI-plus-review bar is named alongside it.
 
 ---
 
 ## Step 2: Back-of-Envelope Constraints
 
-Lesson 7's Concept 4 defines a five-step back-of-envelope method (state assumptions, decompose, compute with units, sanity-check the order of magnitude, name the most sensitive assumption) specifically so it doesn't have to be re-derived in "capstone #9, #12, #13, or any future one" — its own words, naming this capstone directly. Applied here, not re-derived:
+Lesson 7's five-step method is applied here, not re-derived: state assumptions, decompose, compute with units, sanity-check the magnitude, name the most sensitive input. Cognition publishes no sizing figures, so every number in this step is *(illustrative)*; the post confirms only the qualitative "multi-hour" and "thousands of decisions" claims.
 
-**Step 1 — state assumptions explicitly (all illustrative; Cognition's post confirms "multi-hour" capability as a general claim but publishes no task-duration distribution, concurrency figure, or cost figure):**
-- A platform-wide fleet running **500 concurrent active agent sessions** at any given moment.
-- **Task duration distribution:** median 20 minutes, p90 90 minutes, p99 240 minutes (p90/p99 — the 90th- and 99th-percentile duration: 90%, respectively 99%, of sessions finish faster than this — defined in full in Lesson 9's Concept 2). The p90 figure is deliberately the same 90-minute task Lesson 6's Concept 4 already used as its own illustrative example of a task that can't be served over one synchronous connection — reused here on purpose, for the same reason capstone #9 reused Lesson 6's 2,000,000-chunk figure rather than inventing a conflicting number.
-- **Sandbox resource budget per session:** 4 vCPUs, 8 GB RAM, 20 GB disk — sized for a full dev environment (shell, editor, browser, and whatever language toolchain the target repo needs), not a single stateless tool call.
-- **Round-trips per task:** ~200 LLM reasoning/tool-call round-trips for a 90-minute (p90) task.
-- **Tokens per round-trip:** 3,000 input / 300 output tokens, at the same illustrative $3/1M-input, $15/1M-output pricing Lesson 7's own Concept 4 worked example already used, reused here for consistency rather than picking a new number.
-- **Sandbox compute cost:** $0.20/hour (illustrative order-of-magnitude for a mid-size cloud VM/container).
+### Assumptions
 
-**Step 2 — decompose:**
-```
-fleet_vcpu_needed      = concurrent_sessions × vcpu_per_session
-fleet_ram_needed       = concurrent_sessions × ram_per_session
-llm_cost_per_task      = (round_trips × input_tokens_per_rt  / 1,000,000) × input_price
-                        + (round_trips × output_tokens_per_rt / 1,000,000) × output_price
-sandbox_cost_per_task  = task_duration_hours × hourly_sandbox_rate
+- A fleet of **500 concurrent active sessions** at any moment.
+- **Task durations:** median 20 minutes, p90 90 minutes, p99 240 minutes. The 90-minute p90 is the same task Lesson 6 used as its own example, reused here on purpose.
+- **Sandbox per session:** 4 vCPUs, 8 GB RAM, 20 GB disk — a full dev environment, not one stateless call.
+- **Round-trips per task:** about 200 model reasoning or tool-call round-trips for a 90-minute task.
+- **Tokens per round-trip:** 3,000 input, 300 output, at this repo's shared illustrative anchor of \$3 per million input tokens and \$15 per million output tokens.
+- **Sandbox compute:** \$0.20 per hour, an order-of-magnitude figure for a mid-size cloud VM.
+
+### Decompose
+
+```text
+fleet_vcpu_needed      = concurrent_sessions * vcpu_per_session
+fleet_ram_needed       = concurrent_sessions * ram_per_session
+llm_cost_per_task      = (round_trips * input_tokens_per_rt  / 1e6) * input_price
+                       + (round_trips * output_tokens_per_rt / 1e6) * output_price
+sandbox_cost_per_task  = task_duration_hours * hourly_sandbox_rate
 total_cost_per_task    = llm_cost_per_task + sandbox_cost_per_task
 ```
 
-**Step 3 — compute step by step, carrying units:**
-```
-fleet_vcpu_needed = 500 sessions × 4 vCPU/session   = 2,000 vCPUs
-fleet_ram_needed  = 500 sessions × 8 GB/session     = 4,000 GB RAM
+### Compute, carrying units
+
+```text
+fleet_vcpu_needed = 500 sessions * 4 vCPU/session = 2,000 vCPUs
+fleet_ram_needed  = 500 sessions * 8 GB/session   = 4,000 GB RAM
 
 (at the p90, 90-minute task, 200 round-trips)
-input_tokens  = 200 round-trips × 3,000 tokens/round-trip  = 600,000 tokens  = 0.6M tokens
-output_tokens = 200 round-trips ×   300 tokens/round-trip  =  60,000 tokens  = 0.06M tokens
+input_tokens  = 200 * 3,000 = 600,000 tokens = 0.6M
+output_tokens = 200 *   300 =  60,000 tokens = 0.06M
 
-llm_cost_per_task     = 0.6 × $3  +  0.06 × $15
-                      = $1.80  +  $0.90
-                      = $2.70
-
-sandbox_cost_per_task = 1.5 hours × $0.20/hour = $0.30
-
-total_cost_per_task   ≈ $3.00
+llm_cost_per_task     = 0.6 * 3  +  0.06 * 15  =  1.80 + 0.90  =  2.70   (dollars)
+sandbox_cost_per_task = 1.5 hours * 0.20/hour  =  0.30                   (dollars)
+total_cost_per_task   = about 3.00                                      (dollars)
 ```
 
-**Step 4 — sanity-check the order of magnitude.** 2,000 vCPUs / 4,000 GB RAM of fleet-wide sandbox capacity is the same order of magnitude as a mid-size production Kubernetes cluster — plausible for a platform running hundreds of concurrent agent sessions, not an obvious order-of-magnitude error in either direction. Separately: running the full SWE-bench benchmark once (2,294 tasks, per Step 1's Sidebar — the benchmark's own confirmed task count) at this document's own ≈$3/task figure costs roughly `2,294 × $3 ≈ $6,882` — a plausible R&D compute cost for one evaluation pass, not a number that's off by orders of magnitude in either direction (not "$7" and not "$7 million"), which is this step's actual job: catching a mistake that size, not confirming Cognition's own real spend.
+### Sanity-check the magnitude
 
-**Step 5 — name the assumption the answer is most sensitive to.** The **200-round-trips-per-task** figure is the most sensitive input in this whole estimate, and it's also the one number this document has the least grounding for: Cognition's own post gives no visibility into actual tool-call counts, only the qualitative claim that a task can require **"thousands of decisions"** (source-confirmed, Step 1). If a 90-minute task actually involves closer to 2,000 round-trips rather than 200 — entirely consistent with "thousands of decisions" — the LLM-cost term alone scales to roughly $27, swamping the $0.30 sandbox-compute term by nearly two orders of magnitude and pushing total cost per task from ≈$3 to ≈$27+. That's the number worth measuring first in a real prototype, not the sandbox compute budget.
+2,000 vCPUs and 4,000 GB of fleet sandbox capacity is the order of a mid-size production Kubernetes cluster — plausible for hundreds of concurrent sessions, not an obvious error either way. Separately, running the full benchmark once (2,294 tasks) at this document's own roughly \$3 per task costs about `2,294 × 3 ≈ $6,882`. That is a plausible R&D compute cost for one evaluation pass — not \$7 and not \$7 million, which is this step's actual job: catching an error that size, not confirming Cognition's real spend.
 
-**Trade-offs considered:** Provisioning a generous per-session sandbox budget (4 vCPU/8 GB) protects against a task that needs to run a heavy build or large test suite, but at 500 concurrent sessions that's 2,000 vCPUs/4,000 GB of fleet-wide reserved capacity, most of which sits idle during the many round-trips where the sandbox is simply waiting on an LLM response rather than executing anything — the same safety-margin-vs-fleet-cost trade-off Lessons 3 and 7 already establish generally, now sized concretely for this workload. Using a flat per-round-trip token estimate is also a simplification that understates real cost for long tasks: context accumulates as the agent's plan history and tool outputs grow (Lesson 1's Concept A2, context window as a resource, applies directly here), so a round-trip late in a 90-minute task costs strictly more tokens than one early in it — meaning this step's $2.70 figure should be read as a conservative floor, not a ceiling, independent of Step 5's own sensitivity finding above.
+### The most sensitive input
+
+The **200 round-trips per task** figure is the one the estimate is most sensitive to, and the one with the least grounding: the post gives no tool-call counts, only "thousands of decisions". If a 90-minute task is closer to 2,000 round-trips, the model-cost term alone rises to about \$27, swamping the \$0.30 sandbox term by nearly two orders of magnitude and pushing total cost from about \$3 to \$27 or more. That is the number worth measuring first in a real prototype, not the sandbox budget.
+
+### Trade-offs
+
+A generous 4-vCPU, 8-GB per-session budget protects a heavy build or large test suite, but at 500 sessions that is 2,000 vCPUs and 4,000 GB reserved, most of it idle during the many round-trips where the sandbox waits on a model response. A flat per-round-trip token estimate also understates long tasks: context grows as plan history and tool outputs accumulate, so a late round-trip costs more tokens than an early one. Read the \$2.70 figure as a conservative floor, not a ceiling.
 
 ---
 
 ## Step 3: Data / Knowledge Pipeline
 
-**What context the agent needs, mapped to concepts this repo already defines:**
-- **Repository structure** — the file tree and, typically, a searchable index over file/symbol names, so the agent can locate relevant code without reading the entire repository into context on every step.
-- **The issue/task description** — the natural-language input defining what "done" means for this run.
-- **Relevant code** — located via the same retrieval mechanics Lesson 1's Concepts C1-C2 already define in full (embeddings, vector/keyword search), just applied to source code instead of a document corpus; not re-derived here, only named for where it comes from.
-- **Test results as a feedback signal** — the single most important piece of context a one-shot generator never gets, and this agent depends on structurally: running the test suite mid-task tells the agent, with actual ground truth, whether its last edit helped or broke something — the "observe the result of an action" half of the control-flow patterns Lesson 1's Concept D2 already names (detailed in Step 4 below).
+### What context the agent needs
 
-**How context stays current across a long-running session — the one genuine difference from a RAG chatbot's corpus.** Capstone #9's RAG pipeline (`case-studies/rag-contextual-retrieval`) retrieves from a corpus that's largely static *during* any single query — it changes slowly, on its own schedule, independent of any one conversation. This capstone's "corpus" — the repository's actual file contents — is instead mutated by the agent's *own actions* turn over turn: every file edit and test run changes the ground truth the next planning step has to reason about. Context can't be fetched once up front and reused; each new step's context has to reflect the repository's current state, not its state when the task started:
+- **Repository structure** — the file tree and usually a searchable index over file and symbol names, so the agent can locate code without reading the whole repository on every step.
+- **The issue or task description** — the natural-language input defining what "done" means for this run.
+- **Relevant code** — found with the same retrieval mechanics Lesson 1 defines (embeddings, vector or keyword search), applied to source instead of documents; named here, not re-derived.
+- **Test results as feedback** — the piece a one-shot generator never gets. Running the suite mid-task tells the agent, with real ground truth, whether its last edit helped or broke something.
+
+### The one real difference from a RAG chatbot
+
+Capstone #9's RAG corpus is largely static during a single query; it changes slowly, on its own schedule. This agent's "corpus" is the repository's file contents, and the agent mutates it with its own actions turn over turn. Every edit and test run changes the ground truth the next step reasons about. Context cannot be fetched once up front and reused; each step must reflect the repository's current state.
 
 ```mermaid
 flowchart LR
     subgraph RAG["Capstone #9 RAG — static corpus"]
-        Q1["Query"] --> R1["Retrieve from corpus\n(corpus unchanged by the query)"]
+        Q1["Query"] --> R1["Retrieve from corpus\n(unchanged by the query)"]
     end
     subgraph Agent["This capstone — self-mutating corpus"]
         S1["Plan step"] --> A1["Edit file / run test"]
         A1 --> S2["Repo state changes"]
-        S2 --> S3["Next plan step retrieves\ncurrent, post-edit state"]
+        S2 --> S3["Next step retrieves\ncurrent, post-edit state"]
         S3 --> S1
     end
 ```
 
-This is also why **state/checkpointing** (Lesson 1's Concept E3, already fully defined there — referenced, not re-derived) is a structural requirement, not a nice-to-have, the moment a session can run for the 90+ minutes Step 2 assumes: if the process running the agent crashes at minute 70 of a 90-minute task, the alternative to checkpointing is re-running everything from minute 0 — including every already-applied file edit and already-passed test — both slow and risking a re-applied edit that's already been made.
+This is why **state and checkpointing** (Lesson 1, Group E) is a structural requirement once a session runs the 90-plus minutes Step 2 assumes. If the process crashes at minute 70 of a 90-minute task, the alternative to checkpointing is re-running from minute 0 — slow, and risking a re-applied edit that was already made.
 
-**A real session-state record, showing exactly what "staying current" looks like concretely** (this is deliberately richer than Lesson 6's own task-queue job schema — `task_id`/`status`/`attempt_count` — since that schema tracks one discrete unit of work, while this one tracks an entire multi-step session's evolving state; Step 5 below reuses Lesson 6's schema for the individual steps *inside* this session):
+### A session-state record
+
+This is richer than Lesson 6's task-queue job schema, which tracks one discrete unit of work; this tracks a whole multi-step session. Step 5 reuses Lesson 6's schema for the individual steps inside the session.
 
 ```json
 {
   "session_id": "devin-session-7f3a2e91",
   "repo_url": "https://github.com/example-org/example-repo",
-  "issue_description": "TypeError raised when parsing a config file with a trailing comma in its JSON array.",
+  "issue_description": "TypeError when parsing a config file with a trailing comma in an array.",
   "status": "running",
   "created_at": "2026-01-14T09:00:00Z",
   "sandbox_id": "sbx-c9e21a",
   "plan": [
-    {"step_index": 0, "description": "Reproduce the reported error with a minimal test case", "status": "succeeded"},
-    {"step_index": 1, "description": "Locate the JSON-parsing code path in src/config_loader.py", "status": "succeeded"},
-    {"step_index": 2, "description": "Patch the parser to tolerate trailing commas; re-run the full test suite", "status": "running"},
-    {"step_index": 3, "description": "Open a pull request with the fix and a regression test", "status": "pending"}
+    {"step_index": 0, "status": "succeeded",
+     "description": "Reproduce the reported error with a minimal test case"},
+    {"step_index": 1, "status": "succeeded",
+     "description": "Locate the JSON-parsing path in src/config_loader.py"},
+    {"step_index": 2, "status": "running",
+     "description": "Patch the parser to tolerate trailing commas; re-run the suite"},
+    {"step_index": 3, "status": "pending",
+     "description": "Open a pull request with the fix and a regression test"}
   ],
   "current_step_index": 2,
   "last_test_run": {"passed": 142, "failed": 1, "ran_at": "2026-01-14T09:41:00Z"},
@@ -125,17 +174,25 @@ This is also why **state/checkpointing** (Lesson 1's Concept E3, already fully d
 }
 ```
 
-`plan` is the full upfront plan from Step 4's control-flow design — not just the current step — which is what makes "staying current" auditable: a client reconnecting mid-session can see exactly which steps already succeeded, not just a single "in progress" status. `last_test_run` is the concrete test-results-as-feedback-signal field named above — `current_step_index`'s plan step reasons about its next action using this field's actual, current content, not a cached assumption from when the plan was first generated. `sandbox_id` ties this session to the specific sandboxed execution environment (Step 5) running its shell/editor/browser actions. `max_duration_minutes` is the session's own timeout — the mechanism bounding the "went off-track for an hour before anyone noticed" failure mode Step 6 covers directly.
+`plan` holds the full upfront plan from Step 4, not just the current step, which is what makes progress auditable: a client reconnecting mid-session sees which steps already succeeded, not one opaque "in progress". `last_test_run` is the test-results-as-feedback field; the current step reasons with its actual current content, not a cached assumption. `sandbox_id` ties the session to its sandbox (Step 5). `max_duration_minutes` is the session timeout that bounds the "went off-track for an hour" failure mode (Step 6).
 
-**Trade-offs considered:** Re-fetching and re-indexing the full repository state before every single planning step guarantees the agent never reasons about stale file contents, but is wasteful when most steps only touch one or two files — versus incrementally updating only the files a step's own action actually changed (the design implied by the schema above), which is cheaper per step but relies on the agent's own action log being complete and accurate; a missed or mis-recorded action could leave the agent reasoning about a file it believes is unchanged when it isn't. Storing the full plan array (rather than just the current step) in session state makes progress genuinely auditable and resumable after a crash, at the direct cost of session-state size growing with plan length — a real, if small, storage and transfer cost that a single-field "current status" design wouldn't have.
+### Trade-offs
+
+Re-indexing the full repository before every step guarantees the agent never reasons about stale files, but wastes work when most steps touch one or two files. Updating only the files a step changed is cheaper, but relies on the agent's own action log being complete; a missed action leaves it reasoning about a file it believes is unchanged. Storing the full plan array, not just the current step, makes progress auditable and resumable after a crash, at the cost of session-state size growing with plan length.
 
 ---
 
-## Step 4: Model/Agent Core Design — the Plan-Then-Execute Loop as an Explicit Trade-off
+## Step 4: Model/Agent Core Design — the Plan-and-Execute Loop
 
-**A terminology note worth being explicit about, in the spirit of this repo's own existing discipline around stale or inconsistent references (Lesson 6's Concept 4 flags exactly this kind of discrepancy for a different term):** Devin's architecture is sometimes described as a "plan-then-execute loop." Lesson 1's Concept D2 names the identical control-flow pattern **plan-and-execute**. These are the same pattern under two names, not two different patterns — this document uses Lesson 1's own established terminology from here on, linking to that existing Concept rather than re-teaching or re-naming it. Lesson 1's own full definition, referenced and not re-derived here: *"a control-flow pattern where the model first produces a full multi-step plan up front (before taking any actions), and only then executes each step in sequence — optionally revising the plan if a step's result changes what's needed — in contrast to ReAct's one-step-at-a-time reasoning."*
+### One pattern, two names
 
-**Devin's own architecture, mapped onto that definition.** Cognition's post never uses Lesson 1's control-flow vocabulary — it describes the behavior ("plan and execute complex engineering tasks," "recall relevant context at every step... and fix mistakes") without naming its own control-flow pattern. Mapping that description onto plan-and-execute is this document's own reasoned categorization, not a claim that Cognition's post uses that term. One structural detail matters for that mapping: the quoted phrase "fix mistakes" implies an observe-and-correct step happening *during* execution, not a single fixed plan blindly executed start to finish with no checking in between — making Devin's actual loop (as best this document can characterize it from the source) a **hybrid**: an outer plan-and-execute structure (a real upfront plan exists and gets referenced throughout, as Step 3's session-state schema shows directly) wrapped around an inner, per-step observe-and-adjust behavior closer to what Lesson 1's Concept D2 separately names **reflection**. A deliberate design choice, not an oversight — Step 4's "Why this beats pure open-loop execution" below is the concrete argument for why.
+Devin's architecture is sometimes called a "plan-then-execute loop". Lesson 1, Group D names the identical pattern **plan-and-execute**. These are the same pattern under two names. This document uses Lesson 1's term and links to it rather than re-teaching: a control-flow pattern where the model produces a full multi-step plan up front, then executes each step in sequence, optionally revising the plan if a step's result changes what is needed — in contrast to ReAct's one-step-at-a-time reasoning.
+
+### Mapping Devin's description onto the pattern
+
+Cognition's post never uses this vocabulary; it describes the behaviour ("plan and execute… requiring thousands of decisions", "recall relevant context at every step… and fix mistakes") without naming a control-flow pattern. Mapping that onto plan-and-execute is this document's reasoned categorisation, not a claim about the post's wording.
+
+One detail matters: "fix mistakes" implies an observe-and-correct step *during* execution, not a fixed plan run blindly start to finish. So the loop is best characterised as a hybrid — an outer plan-and-execute structure (a real upfront plan exists and is referenced throughout, as Step 3's schema shows) around an inner, per-step observe-and-adjust behaviour closer to what Lesson 1 names **reflection**.
 
 ```mermaid
 flowchart TD
@@ -149,56 +206,62 @@ flowchart TD
     REVISE --> STEP
 ```
 
-**The trade-off, stated against two real alternatives, not presented as the only option:**
+### The trade-off against two real alternatives
 
-1. **Single-shot generation** (no control loop at all — one model call produces one complete diff, with no execution or test-running step afterward). Cheapest and fastest by far, with zero risk of the multi-hour runaway-session failure mode Step 6 covers. But it's structurally incapable of the task this capstone is scoped to (Step 1): it never runs a test, never observes a real result, and has no mechanism to recover from being wrong about the codebase's current state. Not a real contender for this capstone's objective — included only because it's the baseline every other option here is implicitly compared against.
+**Single-shot generation** — one model call produces one diff, no execution step. Cheapest and fastest, with no runaway-session risk, but structurally incapable of this task: it never runs a test, never observes a result, and cannot recover from being wrong about the codebase. It is the baseline the others are compared against, not a real contender.
 
-2. **A tight ReAct loop with no explicit upfront plan** (Lesson 1's Concept D2, referenced not re-derived: one-step-at-a-time reasoning, action, observation, repeat). More flexible moment-to-moment than committing to a plan up front — it can react immediately to a surprising result with no stale plan to revise or discard. But it has no natural artifact to report back to the user as "here's what I'm doing and why" (Cognition's own confirmed "reports on its progress in real time... works together with you through design choices as needed" — source-confirmed) short of narrating each step after the fact, and it gives up the auditability a stated-up-front plan provides: no single place to check "is this on track," only a trailing history of actions already taken.
+**A tight ReAct loop with no upfront plan** — one step at a time: reason, act, observe, repeat. More flexible moment to moment, with no stale plan to revise. But it has no artifact to report as "here is what I am doing and why" short of narrating each step, and it gives up the auditability a stated plan provides: no single place to check "is this on track", only a trailing history.
 
-3. **Plan-and-execute, with per-step observation** (this capstone's actual design, per the mapping above). The upfront plan is literally the artifact Step 3's `plan` field reports progress against, and the thing a human reviewer (Step 1's real-world ground truth) can inspect mid-session to judge whether the agent's approach makes sense *before* it's finished — a real, structural advantage for the "continuous progress reporting" requirement Step 5 has to deliver on. The cost: a plan can become wrong once execution reveals something it didn't anticipate (e.g. step 2 discovers the bug isn't where step 1 assumed), which is why "optionally revising the plan" is part of Lesson 1's own definition rather than an edge case — a plan-and-execute agent that can't revise its plan when reality disagrees with it is strictly worse than ReAct at handling surprises, not just differently flexible.
+**Plan-and-execute with per-step observation** — this capstone's design. The upfront plan is the artifact Step 3's `plan` field reports against, and the thing a reviewer can inspect mid-session to judge the approach before it finishes. The cost: a plan can become wrong once execution reveals something it did not anticipate, which is why "optionally revising the plan" is part of the definition. A plan-and-execute agent that cannot revise is strictly worse than ReAct at surprises.
 
-**Why this beats pure open-loop execution — the compounding-error math that makes "fix mistakes" load-bearing, not decorative.** Suppose a task decomposes into `n` sequential decisions, each independently correct with probability `p`, and — critically — suppose there's *no* per-step observation or correction at all: a genuinely open-loop design that commits to and blindly executes a fixed plan with no checking in between. The probability of the task completing with zero mistakes is:
+### Why observation is load-bearing: the compounding-error math
 
-```
+Suppose a task is `n` sequential decisions, each independently correct with probability `p`, and there is no per-step observation or correction at all — a genuinely open loop that commits to a fixed plan and executes it blindly. The chance of finishing with zero mistakes is:
+
+```text
 P(task succeeds, no correction) = p^n
 ```
 
-At `p = 0.95` (a 95% per-step success rate — already a strong per-step rate) and `n = 50` decisions (a conservative fraction of the "thousands of decisions" the source itself claims a full task can require):
+At `p = 0.95` (a strong per-step rate) and `n = 50` decisions (a conservative fraction of the "thousands" the source claims):
 
+```text
+P(success) = 0.95^50 ≈ 0.077   ->   roughly a 7.7% chance of a clean run
 ```
-P(success) = 0.95^50 ≈ 0.077   →   roughly a 7.7% chance of a fully clean run
-```
 
-A 95%-reliable-per-step agent, with no way to catch and fix its own mistakes along the way, would complete a 50-decision task cleanly less than 8% of the time — and that's before accounting for Cognition's own claim of tasks requiring *thousands*, not 50, decisions, which pushes `p^n` far closer to zero. **This is an illustrative sanity check, not a claimed explanation of Cognition's actual reported figure** — not presented as deriving the real 13.86% SWE-bench number (Step 6), only as showing why a resolve rate in that rough single-digit-to-low-double-digit range is unsurprising, even expected, for a task shape with this many sequential decisions, rather than a sign this particular agent is unusually bad at its job. It's also the concrete reason the "fix mistakes" half of the source's own description (observation and per-step correction, not blind plan execution) isn't an optional nicety: without it, `p^n` makes long multi-step autonomy essentially unachievable at any plausible single-step reliability.
+A 95%-reliable step, with no way to catch its own mistakes, completes a 50-decision task cleanly less than 8% of the time — and that is before the source's "thousands" of decisions push `p^n` far closer to zero. This is an illustrative sanity check, not a claimed derivation of Devin's real 13.86% (Step 6). It only shows why a resolve rate in the single-digit to low-double-digit range is unsurprising for a task of this shape, and why "fix mistakes" is not an optional nicety: without it, `p^n` makes long multi-step autonomy essentially unachievable at any plausible single-step reliability.
 
-**Trade-offs considered:** Single-shot generation and a plan-free ReAct loop are both real, cheaper alternatives for shorter or simpler tasks — this capstone's commitment to a plan-and-execute-with-observation hybrid is specifically a consequence of the task shape Step 1 scoped (multi-hour, many-decision, requiring real execution feedback), not a universal claim that plan-and-execute beats ReAct or single-shot generation in general; Lesson 1's own Concept D2 is explicit that this is a real trade-off (predictability vs. flexibility), not one pattern being strictly better. Building in per-step observation and plan revision (rather than a pure, non-revisable upfront plan) adds real complexity — the agent now needs logic for "is my current plan still valid," not just "execute the next step" — but per the compounding-error math above, skipping it isn't a simpler version of the same design, it's a design that's mathematically unlikely to complete a long task at all.
+### Trade-offs
+
+Single-shot and plan-free ReAct are both cheaper for shorter tasks. This capstone's hybrid is a consequence of the task shape Step 1 scoped (multi-hour, many-decision, needing real execution feedback), not a universal claim that plan-and-execute beats the others; Lesson 1 is explicit that it is a predictability-versus-flexibility trade-off. Building in per-step observation and plan revision adds complexity — the agent needs logic for "is my plan still valid", not just "execute the next step" — but per the math above, skipping it is not a simpler version of the same design, it is a design mathematically unlikely to finish a long task.
 
 ---
 
 ## Step 5: Serving Architecture
 
-This step exists to deliver on three concrete promises other, already-written documents in this repo made about this capstone before it existed. Each is quoted directly, then made concrete.
+This step delivers on three promises other documents in this repo already made about this capstone.
 
-**Delivering on Lesson 6's Concept 4 promise — why this can't be one synchronous REST request.** Lesson 6's Concept 4 states directly: *"Capstone #13's autonomous coding agent is capable of 'multi-hour autonomous task completion' — take a conservative 90-minute (5,400-second) task as an illustrative example: `timeout_ratio = task_duration / typical_gateway_idle_timeout = 5,400 / 60 = 90x`."* This capstone's own Step 2 assumptions (p90 task duration = 90 minutes) were chosen specifically to match that figure, rather than introduce a second, conflicting number — the two documents describe the same system. A task running 90x longer than AWS ALB's documented 60-second default idle timeout (Lesson 6's own cited source) cannot be held open as one synchronous request; the gateway kills the connection long before the task finishes, regardless of what the agent or backend want. Per Lesson 6's own decomposition, reused directly here as this capstone's actual design:
+### Why this cannot be one synchronous request
 
-```
+Lesson 6, Concept 4 states it: a 90-minute (5,400-second) task against AWS ALB's documented 60-second default idle timeout gives `timeout_ratio = 5,400 / 60 = 90x`. Step 2's p90 duration was chosen to match that figure rather than introduce a conflicting one. A task running 90 times longer than the gateway's idle timeout cannot be held open as one request; the gateway closes the connection long before the task finishes. The design follows Lesson 6's decomposition directly:
+
+```text
 Client (IDE plugin / web UI)
-   │
-   │ 1. POST /v1/tasks   (REST — fast, well under any gateway timeout)
-   ▼
-API gateway  ──────────────────────────────►  Task queue (Lesson 6, Concept 1)
-   │  returns 202 Accepted + task_id              one entry = one coding-agent session
-   │  immediately, connection closes                       │
-   ▼                                                        ▼
+   |
+   | 1. POST /v1/tasks   (REST, fast, well under any gateway timeout)
+   v
+API gateway  ------------------------------->  Task queue (Lesson 6, Concept 1)
+   |  returns 202 Accepted + task_id              one entry = one coding-agent session
+   |  immediately, connection closes                       |
+   v                                                        v
 Client polls / subscribes:                          Orchestrator worker pool
 GET /v1/tasks/{id}/status                           pulls a session, runs the
-  or a streamed/webhook channel  ◄───────────────    plan-and-execute loop (Step 4)
+  or a streamed/webhook channel  <---------------    plan-and-execute loop (Step 4)
   ("continuous progress reporting")                  inside a per-session sandbox
-                                                             │
-                                                             ▼
+                                                             |
+                                                             v
                                               Sandboxed compute environment
-                                         (shell tool | editor tool | browser tool —
-                                          three separately-scoped credentials, below)
+                                          (shell | editor | browser tools,
+                                           three separately-scoped credentials)
 ```
 
 ```mermaid
@@ -210,21 +273,27 @@ flowchart LR
     SBX -.->|"status / webhook"| C
 ```
 
-```
+```http
 POST /v1/tasks HTTP/1.1
 Host: api.example.com
 Content-Type: application/json
 
-{"repo_url": "https://github.com/example-org/example-repo", "issue_description": "...", "max_duration_minutes": 120}
+{"repo_url": "https://github.com/example-org/example-repo",
+ "issue_description": "...", "max_duration_minutes": 120}
 ```
-```
+
+```http
 HTTP/1.1 202 Accepted
-{"task_id": "devin-session-7f3a2e91", "status": "queued", "status_url": "/v1/tasks/devin-session-7f3a2e91/status"}
+
+{"task_id": "devin-session-7f3a2e91", "status": "queued",
+ "status_url": "/v1/tasks/devin-session-7f3a2e91/status"}
 ```
 
-The submit call is REST-shaped and returns in milliseconds; everything that actually takes 90 minutes runs entirely inside the task queue's worker, decoupled from that request/response pair — exactly Lesson 6's own three-part decomposition: "(1) a REST-shaped call that submits the task and immediately returns a task ID..., (2) a task queue running the actual multi-step agent loop as a background job..., and (3) a separate channel... for... 'continuous progress reporting.'" The `status_url` above is that third channel — the client polls `GET /v1/tasks/{id}/status` (or subscribes to a stream/webhook) and receives exactly the session-state record Step 3 already defined, which lets that record double as both this capstone's internal state *and* the external progress-reporting payload, rather than needing two separate schemas.
+The submit call returns in milliseconds; everything that takes 90 minutes runs inside the queue's worker, decoupled from that request. The `status_url` is the third channel: the client polls `GET /v1/tasks/{id}/status` or subscribes to a stream and receives exactly Step 3's session-state record, so that record doubles as the internal state and the external progress payload.
 
-**Delivering on Lesson 6's Concept 1 promise — the agent's own steps as a task queue underneath the session.** Lesson 6's Concept 1 states directly: *"Capstone #13... is this Concept's sibling pattern one layer up: its 'plan-then-execute loop'... naturally decomposes into a task queue of individual agent steps (a shell command, a file edit, a test run), each one a discrete, retryable, idempotency-sensitive unit of work in the same shape as an embedding task."* Concretely: each entry in Step 3's `plan` array, once it's the orchestrator's turn to execute it, is enqueued as one task-queue job, reusing Lesson 6's own job schema fields directly (`task_id`, `status`, `attempt_count`, `max_attempts`) rather than inventing a second shape for the same concept:
+### The agent's own steps as a task queue
+
+Lesson 6, Concept 1 states that each agent step — a shell command, a file edit, a test run — is a discrete, retryable, idempotency-sensitive unit of work shaped like an embedding task. Each `plan` entry, once it is the orchestrator's turn to run it, is enqueued as one job, reusing Lesson 6's own fields rather than a second shape:
 
 ```json
 {
@@ -239,35 +308,40 @@ The submit call is REST-shaped and returns in milliseconds; everything that actu
 }
 ```
 
-Idempotency matters exactly as it did for capstone #9's embedding tasks (Lesson 6, Concept 1), but the specific risk differs by tool — shown in the retry diagram below:
-- **`shell` actions** (e.g. a test command): typically safe to retry — running the same test suite twice doesn't corrupt anything.
-- **`editor` actions** (applying a diff): *not* automatically safe — applying the same patch twice can fail outright or silently corrupt the file. A real implementation has to check the file's current state before reapplying an edit action, a distinction a plain shell-command retry doesn't need to make.
+Idempotency matters as it did for capstone #9's embedding tasks, but the risk differs by tool:
+
+- **`shell` actions** such as a test command are usually safe to retry — running the same suite twice corrupts nothing.
+- **`editor` actions** applying a diff are not automatically safe — applying the same patch twice can fail or silently corrupt the file. A real implementation checks the file's current state before reapplying an edit, a check a plain shell retry does not need.
 
 ```mermaid
 flowchart LR
     PLAN["Plan step\n(plan_step_index: 2)"] --> JOB["Task-queue job\n{tool: shell, attempt_count: 0}"]
     JOB --> RUN["Run action"]
-    RUN -->|succeeds| NEXT["Mark succeeded\n→ next plan step"]
-    RUN -->|"fails, attempt_count under max_attempts"| RETRY{"tool == shell?"}
-    RETRY -->|"yes - safe to retry"| JOB
-    RETRY -->|"no, editor - check file state first"| CHECK["Check current file state"]
+    RUN -->|succeeds| NEXT["Mark succeeded\n-> next plan step"]
+    RUN -->|"fails, attempts under max"| RETRY{"tool == shell?"}
+    RETRY -->|"yes, safe to retry"| JOB
+    RETRY -->|"no, editor: check state first"| CHECK["Check current file state"]
     CHECK --> JOB
 ```
 
-**Delivering on Lesson 7's Concept 3 promise — least privilege scoped per tool, not one undifferentiated credential.** Lesson 7's Concept 3 states directly: *"Capstone #13 grants 'sandboxed shell/editor/browser access' and explicitly notes this 'raises the sandboxing stakes from Group F' — each of those three distinct tools (shell, editor, browser) is exactly the kind of access that should be scoped to least privilege individually (a browser tool has no legitimate need for filesystem-delete access, for instance) rather than granted as one undifferentiated 'full dev environment' credential."* This capstone's own design confirms that inference directly, rather than overriding it — three separate scoped tool configurations, not one:
+### Least privilege scoped per tool
+
+Lesson 7, Concept 3 argues that shell, editor and browser are each the kind of access that should be scoped to least privilege individually — a browser tool has no need for filesystem-delete access — rather than granted as one undifferentiated credential. This design confirms that: three separate scoped configurations, not one.
 
 ```json
 {
-  "shell_tool":   {"filesystem": "read-write:/workspace/repo", "network": "none",                          "max_runtime_sec": 120},
-  "editor_tool":  {"filesystem": "read-write:/workspace/repo", "network": "none",                          "max_file_size_mb": 10},
-  "browser_tool": {"filesystem": "none",                       "network": "allowlist:docs-and-registries-only", "no_shell_exec": true}
+  "shell_tool":   {"filesystem": "read-write:/workspace/repo",
+                   "network": "none", "max_runtime_sec": 120},
+  "editor_tool":  {"filesystem": "read-write:/workspace/repo",
+                   "network": "none", "max_file_size_mb": 10},
+  "browser_tool": {"filesystem": "none", "no_shell_exec": true,
+                   "network": "allowlist:docs-and-registries"}
 }
 ```
 
-Per tool, shown in the diagram below:
-- **`browser_tool`** can reach the public internet (within an allowlist) but has no filesystem access and is explicitly barred from executing shell commands — the concrete form of Lesson 7's own example ("a browser tool has no legitimate need for filesystem-delete access").
-- **`shell_tool` and `editor_tool`** can both touch the workspace but neither has open network access, since neither's job requires it.
-- **If any one tool's credential is leaked or hijacked** (e.g. via a prompt-injection attack through a malicious web page the browser tool reads — Lesson 8's F1, not re-taught here), the blast radius (Lesson 7's own Concept 1 term, referenced not re-derived) is bounded to exactly that one tool's scope, not the full dev environment.
+- **`browser_tool`** can reach the public internet within an allowlist but has no filesystem access and cannot run shell commands.
+- **`shell_tool` and `editor_tool`** can both touch the workspace but have no open network, since neither needs it.
+- **If a tool credential leaks or is hijacked** — for example via a prompt-injection attack through a malicious web page the browser reads (Lesson 8) — the blast radius (Lesson 7, Concept 1) is bounded to that one tool's scope, not the full environment.
 
 ```mermaid
 flowchart TD
@@ -279,7 +353,9 @@ flowchart TD
     BROWSE -.->|"leaked credential (e.g. prompt injection)"| BLAST2["Blast radius:\nallowlisted network only,\nno filesystem"]
 ```
 
-**Sandbox resource limits — the config underneath Step 2's own illustrative budget.** An illustrative, Docker-style resource-limit config for one session's sandbox, sized to Step 2's own per-session assumptions:
+### Sandbox resource limits
+
+An illustrative Docker-style config for one session's sandbox, sized to Step 2's assumptions:
 
 ```json
 {
@@ -292,20 +368,22 @@ flowchart TD
 }
 ```
 
-- `pids_limit` caps the number of simultaneous OS processes the sandbox can spawn — a real guard against a single runaway or malicious shell command forking enough processes to exhaust the host's process table, independent of the CPU/memory limits above it.
-- `timeout_seconds` (7,200s = 120 minutes) is the sandbox-level enforcement of Step 3's own `max_duration_minutes` field — two layers independently enforcing the same ceiling, so a bug in the session-state logic doesn't leave a sandbox running forever.
+- `pids_limit` caps simultaneous OS processes — a guard against a runaway or malicious command forking enough processes to exhaust the host's process table, independent of the CPU and memory limits.
+- `timeout_seconds` (7,200 s = 120 minutes) is the sandbox-level enforcement of Step 3's `max_duration_minutes`. Two layers enforce the same ceiling, so a bug in the session logic does not leave a sandbox running forever.
 
-**Why this "raises the sandboxing stakes" from Group F specifically, with a number, not just an assertion.** Lesson 8's Group F covers this directly:
-- **F2** covers sandboxing a single agent's execution (hands-on, via `learn-docker-ai-agents` Lesson 1's `sbx`/microVMs — a lightweight, hardware-virtualized sandbox isolating one untrusted workload from the host and other sandboxes).
-- **F5** covers **multi-tenant isolation** — keeping one agent platform's many customers' data and credentials from leaking into each other, when one platform serves them all on shared infrastructure.
+### Why this raises the sandboxing stakes
 
-This capstone combines both concerns at once, at a higher stake than either alone: a coding-agent sandbox doesn't just execute one-off, stateless tool calls (F2's baseline case) — it holds a real customer's actual source code, which routinely contains real secrets (API keys in config files, database credentials in `.env` files, CI tokens), for a session persisting up to Step 2's full 240-minute p99 duration, on a platform (F5's exact concern) serving many customers' repositories concurrently. An illustrative, not sourced, blast-radius calculation in the same shape as Lesson 7's own 50x credential-leak example: if sandboxes are fully tenant-isolated (one customer's repo and credentials per physical sandbox), a single sandbox escape reaches exactly one customer's data. If sandboxes were instead bin-packed for infrastructure efficiency — say, 20 tenant sandboxes co-located on one physical host, sharing a kernel or hypervisor layer a sufficiently severe escape could break out of — the same escape could reach all 20 co-located tenants' repos and credentials at once:
+Lesson 8 covers two concerns: Concept 2 sandboxes a single agent's execution, isolating one untrusted workload from the host; Concept 5 covers multi-tenant isolation, keeping many customers' data and credentials from leaking into each other on shared infrastructure.
 
+This capstone combines both at a higher stake than either alone. A coding-agent sandbox does not run one-off stateless calls — it holds a customer's actual source code, which routinely contains real secrets (API keys in config, database credentials in `.env`, CI tokens), for a session lasting up to Step 2's 240-minute p99, on a platform serving many customers' repositories at once.
+
+An illustrative blast-radius calculation, in the shape of Lesson 7's own credential-leak example. If sandboxes are fully tenant-isolated — one customer per physical sandbox — a single escape reaches one customer's data. If they were bin-packed for efficiency — say 20 tenant sandboxes on one host, sharing a kernel or hypervisor layer a severe escape could break out of — the same escape reaches all 20:
+
+```text
+blast_radius_ratio = co_located_tenants_reachable / tenant_isolated_baseline = 20 / 1 = 20x
 ```
-blast_radius_ratio = co_located_tenants_reachable / tenant-isolated_baseline = 20 / 1 = 20x
-```
 
-The identical sandbox vulnerability is a 20x larger incident purely because of the co-location decision — nothing about the vulnerability changed, only the ceiling on what it could reach, the same shape of conclusion Lesson 7's own least-privilege worked example reaches for a leaked credential rather than a sandbox escape.
+The identical vulnerability is a 20-times larger incident purely because of the co-location decision. Nothing about the vulnerability changed, only the ceiling on what it reaches.
 
 ```mermaid
 flowchart LR
@@ -317,49 +395,65 @@ flowchart LR
     end
 ```
 
-**Trade-offs considered:** Decomposing each plan step into its own task-queue job (this step's second delivery) gives per-step retry and status tracking for free, at the cost of task-queue overhead on every individual shell command or file edit — overhead that's negligible against a multi-minute LLM round-trip but would be wasteful for a sub-millisecond operation, which is exactly why this pattern fits an agent's own tool calls (seconds to minutes each) and wouldn't fit, say, a tight in-process loop incrementing a counter. Scoping three separate least-privilege tool credentials (this step's third delivery) is more configuration to define and keep correct than one shared "full dev environment" grant, and every new tool added to the agent means a new scoped credential to design from scratch — but per the blast-radius math above, the alternative's convenience is bought at a cost that grows directly with how many tenants' sessions end up co-located, which is a cost that compounds with platform scale rather than staying fixed. Full per-tenant sandbox isolation (no co-location at all) eliminates the 20x exposure above entirely, at the direct infrastructure cost of lower bin-packing efficiency — the same isolation-vs-density trade-off any multi-tenant platform has to make, not one this capstone invents.
+### Trade-offs
+
+Decomposing each plan step into its own job gives per-step retry and status for free, at the cost of queue overhead on every shell command or edit — negligible against a multi-minute model round-trip, wasteful for a sub-millisecond operation, which is why the pattern fits an agent's tool calls and not a tight in-process loop. Three scoped credentials are more configuration to keep correct than one shared grant, and every new tool means a new scoped credential — but per the blast-radius math, the convenience of one grant is bought at a cost that grows with how many tenants end up co-located. Full per-tenant isolation removes the 20-times exposure entirely, at the cost of lower bin-packing efficiency — the usual isolation-versus-density trade-off, not one this capstone invents.
 
 ---
 
 ## Step 6: Evaluation, Monitoring, and Iteration
 
-**Offline evaluation — SWE-bench resolve rate, with the honest framing this capstone's title commits to.** Cognition's own post reports, as a direct quote confirmed by fetching the page **(source-confirmed)**: Devin "correctly resolves 13.86%* of the issues end-to-end, far exceeding the previous state-of-the-art of 1.96%," and separately that prior models given the exact files to edit (an easier, assisted setup) "can only resolve 4.80% of issues." The asterisk on the headline figure attaches two caveats, both confirmed directly from the page rather than assumed **(source-confirmed)**: the evaluation ran on "a random 25% subset of the dataset," not the full 2,294-task benchmark; and "Devin was unassisted, whereas all other models were assisted" — the comparison pits an agent that had to *locate* the relevant files itself against baselines simply told which files to edit, a harder task for Devin's side, which cuts in favor of the reported gap being real rather than inflated, but also means the 13.86% figure and the 1.96%/4.80% baselines weren't measured under identical task framing — not an apples-to-apples comparison in the strictest sense. **Per this document's Confidence note, this 13.86% figure must be read as Cognition's own reported benchmark claim, not as an independently verified or peer-reviewed result** — no independent replication or Cognition-published technical report could be confirmed as existing at the time of writing.
+### Offline evaluation: the SWE-bench figure, honestly framed
 
-**Online monitoring, mapped directly to Step 3's session-state fields and Step 5's architecture:**
-- **Progress-reporting fidelity** — do `status_url` polls / stream updates actually reflect `current_step_index` and `last_test_run` in near-real-time, the concrete form of the source's own confirmed "reports on its progress in real time" claim; a stale or lagging status feed defeats the point of the async architecture Step 5 built.
-- **Intervention and cancellation mid-task** — a human must be able to pause, redirect, or kill a running session before it finishes, not only inspect it after the fact (the operational need behind Lesson 8's F4, "human-in-the-loop approval gates"). Concretely: a `DELETE /v1/tasks/{id}` endpoint that terminates the session's sandbox and marks its status `cancelled`, and/or an approval gate before specific high-risk plan steps (e.g. anything pushing to a remote branch) execute at all.
-- **Task-duration and cost distributions against Step 2's assumptions** — real measured p50/p90/p99 durations and real measured cost-per-task, tracked the same way capstone #10's Step 6 tracks its own SLA targets against real measurements, to catch Step 2's flagged sensitivity (the round-trip-count assumption) drifting from reality.
-- **Sandbox resource utilization against the limits in Step 5** — a session consistently hitting its `pids_limit` or `memory_limit` signals the Step 2 budget is undersized for some class of repository, not necessarily a malicious or buggy session.
+Cognition's post reports, verbatim *(source-confirmed)*: Devin "correctly resolves 13.86%* of the issues end-to-end, far exceeding the previous state-of-the-art of 1.96%", and that prior models given the exact files to edit "can only resolve 4.80% of issues". Per the SWE-bench paper's own leaderboard, that 1.96% prior best was Claude 2 with BM25 retrieval.
 
-**The specific failure mode this capstone has to design against: an agent going off-track for an hour before anyone notices.** Nothing about a long-running, autonomous, multi-step loop guarantees it notices its own drift — a plan step can keep "succeeding" by the agent's own account while making no real forward progress (e.g. repeatedly editing the wrong file, or a flaky test making `last_test_run` bounce between pass and fail with no underlying progress). Three layered defenses, all already present in this capstone's design rather than bolted on separately — shown in the diagram below:
+The asterisk attaches two caveats, both confirmed from the page *(source-confirmed)*: the evaluation ran on "a random 25% subset of the dataset", not the full 2,294 tasks; and "Devin was unassisted, whereas all other models were assisted", meaning the baselines were told exactly which files to edit. The 25% subset is about 573 tasks, so 13.86% is roughly 79 tasks resolved. The unassisted-versus-assisted gap cuts in favour of the reported difference being real rather than inflated, but it also means the figures were not measured under identical framing — not apples to apples in the strictest sense.
+
+Read 13.86% as Cognition's own launch claim, not an independently verified or peer-reviewed result. The post itself said a technical report was still "forthcoming"; no independent replication or Cognition technical report could be confirmed as of this writing.
+
+### Online monitoring, mapped to Steps 3 and 5
+
+- **Progress-reporting fidelity** — do `status_url` polls reflect `current_step_index` and `last_test_run` in near-real-time? A lagging feed defeats the async architecture.
+- **Intervention and cancellation mid-task** — a human must be able to pause, redirect or kill a running session, not only inspect it after. Concretely, a `DELETE /v1/tasks/{id}` endpoint that terminates the sandbox and marks the session `cancelled`, and an approval gate before high-risk steps such as pushing to a remote branch.
+- **Duration and cost distributions against Step 2** — real p50/p90/p99 durations and real cost per task, tracked as capstone #10 tracks its SLA targets, to catch Step 2's flagged round-trip sensitivity drifting from reality.
+- **Sandbox utilisation against Step 5's limits** — a session consistently hitting `pids_limit` or `memory_limit` signals the budget is undersized for some class of repository, not necessarily a bad session.
+
+### The failure mode to design against
+
+An agent going off-track for an hour before anyone notices. Nothing about a long autonomous loop guarantees it notices its own drift: a step can keep "succeeding" by the agent's account while making no real progress — repeatedly editing the wrong file, or a flaky test making `last_test_run` bounce between pass and fail. Three layered defences, all already in this design:
+
 - `max_duration_minutes` (Step 3) and `timeout_seconds` (Step 5) bound the absolute worst case.
-- A monitoring rule flagging "no `plan_step_index` advancement across K consecutive sandbox-tool-call cycles" catches a *stalled* session well before its hard timeout, distinct from a *failing* one.
-- The human intervention/cancellation path above is what a flagged, stalled session actually escalates to, rather than silently running to its timeout regardless.
+- A rule flagging "no `plan_step_index` advancement across K consecutive sandbox-tool-call cycles" catches a stalled session well before its hard timeout, distinct from a failing one.
+- The human intervention path is what a flagged, stalled session escalates to, rather than silently running to timeout.
 
 ```mermaid
 flowchart TD
     SESSION["Running session"] --> CHECK{"plan_step_index\nadvanced in last\nK tool-call cycles?"}
     CHECK -->|yes| SESSION
-    CHECK -->|"no - stalled"| FLAG["Flag as stalled"]
+    CHECK -->|"no, stalled"| FLAG["Flag as stalled"]
     FLAG --> HUMAN["Human intervention\n(pause / redirect / cancel)"]
     SESSION --> TIMEOUT{"max_duration_minutes\n/ timeout_seconds\nexceeded?"}
     TIMEOUT -->|yes| KILL["Hard-kill sandbox"]
     TIMEOUT -->|no| SESSION
 ```
 
-**The feedback loop back into Step 3.** Sessions that time out, get manually cancelled, or produce a PR a human reviewer rejects (Step 1's stricter real-world ground truth) are exactly the cases worth reviewing for patterns — a recurring reason a plan goes stale, a repo structure the retrieval step consistently handles badly, a tool-permission boundary (Step 5) that blocked a legitimate action and forced an unnecessary failure. That review feeds back into the retrieval/context-construction step (Step 3) and the plan-generation prompting (Step 4), the same "route real production failures back into the thing that needs fixing" shape capstone #9's own Step 6 feedback loop already follows, just applied to agent sessions instead of a retrieval eval set.
+### The feedback loop back into Step 3
 
-**Trade-offs considered:** Auto-cancelling a session the moment it looks stalled (e.g. no plan advancement for 10 minutes) saves compute and avoids a silent hour-long drift, but risks killing a session that was actually in the middle of a slow-but-legitimate step — a large test suite or a slow network call to a package registry — a real false-positive risk in the same shape as Lesson 7's own health-check interval-vs-threshold trade-off (too aggressive a threshold detects real problems fast but also flags transient, harmless slowness). Requiring full human review before merging every agent-produced PR is the safest option against Step 1's stricter real-world bar, but doesn't scale once the agent succeeds often enough that review itself becomes the throughput bottleneck instead of task generation; auto-merging any PR that passes CI is faster but risks exactly the gap Step 1 named between SWE-bench's test-only grading and a human reviewer's broader judgment — a technically test-passing fix that's still substantively the wrong fix. Neither extreme is correct in general; which one a real deployment picks depends on how costly a wrong-but-passing merge actually is for that specific codebase, which is a business decision this capstone's own architecture doesn't make for it.
+Sessions that time out, get cancelled, or produce a PR a reviewer rejects (Step 1's stricter bar) are the cases worth reviewing for patterns: a recurring reason a plan goes stale, a repo structure the retrieval step handles badly, a tool-permission boundary that blocked a legitimate action. That review feeds back into the context step (Step 3) and the plan-generation prompting (Step 4), the same "route real failures back into the thing that needs fixing" shape capstone #9's feedback loop follows, applied to agent sessions instead of a retrieval eval set.
+
+### Trade-offs
+
+Auto-cancelling the moment a session looks stalled saves compute and avoids silent drift, but risks killing a session in the middle of a slow-but-legitimate step — a large test suite or a slow registry call — the same interval-versus-threshold trade-off as a health check. Requiring full human review before every merge is safest against Step 1's real-world bar, but does not scale once review itself becomes the bottleneck; auto-merging any PR that passes CI is faster but risks exactly the gap Step 1 named between test-only grading and a reviewer's broader judgment. Which extreme a deployment picks depends on how costly a wrong-but-passing merge is for that codebase — a business decision the architecture does not make for it.
 
 ---
 
-## Source(s) and Further Reading
+## Sources and further reading
 
-- Cognition Labs, *"Introducing Devin,"* March 2024 (cognition.com/blog/introducing-devin, redirected from the original cognition.ai domain) — **primary**; confirmed by directly fetching the live page. Source of the sandboxed shell/editor/browser access claim, the "plan and execute complex engineering tasks requiring thousands of decisions" and "recall relevant context at every step, learn over time, and fix mistakes" quotes, the real-time progress-reporting claim, and the SWE-bench resolve-rate figures (13.86% / 1.96% / 4.80%) together with their asterisked methodology caveats (25% random subset; Devin unassisted vs. baselines assisted) — all treated per this document's Confidence note as Cognition's own reported benchmark claim, not an independently verified result. No independent Cognition SWE-bench technical report could be confirmed as published as of this writing.
-- Jiménez, Yang, Wettig, Yao, Pei, Press, Narasimhan, *"SWE-bench: Can Language Models Resolve Real-World GitHub Issues?,"* ICLR 2024 (arXiv:2310.06770) — **primary** (for the benchmark's own definition, not for any Devin-specific claim); the source of SWE-bench's own task count (2,294 issues, 12 Python repositories) and its fail-to-pass/pass-to-pass test-based grading criterion, used in Step 1's Sidebar to define SWE-bench and resolve rate independently of Cognition's own framing of them.
-- Lesson 1 (`lessons/lesson-1-ai-fundamentals-refresher.md`), Concept D2 — the original full definition of plan-and-execute (and ReAct, and reflection), referenced rather than re-derived throughout Step 4; Concept E3 — state/checkpointing, referenced in Step 3; Concept A2 — context window as a resource, referenced in Step 2's trade-offs; Concepts C1-C2 — embeddings/retrieval, referenced in Step 3 for code-context lookup.
-- Lesson 6 (`lessons/lesson-6-async-and-communication.md`), Concept 1 — the task-queue job schema and idempotency discipline this capstone's Step 5 reuses directly for individual plan steps; Concept 4 — the REST-submit/task-queue/progress-channel decomposition and the 90x timeout-ratio argument this capstone's Step 5 confirms rather than overrides.
-- Lesson 7 (`lessons/lesson-7-application-architecture-and-security.md`), Concept 1 — blast radius, referenced in Step 5; Concept 3 — least privilege, the per-tool-scoped-credential design this capstone's Step 5 confirms directly; Concept 4 — the five-step back-of-envelope method this capstone's Step 2 applies rather than re-derives, naming this capstone by number as one of its intended future beneficiaries.
-- `case-studies/llm-inference-serving/README.md` (capstone #10) and `case-studies/rag-contextual-retrieval/README.md` (capstone #9) — structural and sourcing-discipline precedent for this document's own Scope note, Confidence note, and feedback-loop framing.
-- Lesson 8 (`lessons/lesson-8-safety-and-isolation.md`), Group F — F2 (sandboxing, via `learn-docker-ai-agents` Lesson 1's `sbx`/microVMs) and F5 (multi-tenant isolation), referenced to explain concretely what "raises the sandboxing stakes from Group F" means.
-- `appendix/glossary.md` — one-line entries for **SWE-bench** and **resolve rate**, added for this document's own Sidebar.
+- Cognition Labs, "Introducing Devin" (March 2024), cognition.com/blog/introducing-devin, redirected from the original cognition.ai domain — **primary**, read in full from the live page. Source of the sandboxed shell/editor/browser claim, the "plan and execute… thousands of decisions" and "recall relevant context at every step, learn over time, and fix mistakes" quotes, the real-time progress-reporting claim, and the SWE-bench figures (13.86% / 1.96% / 4.80%) with their caveats (random 25% subset; Devin unassisted, baselines assisted). Treated throughout as Cognition's own launch claim, not an independently verified result; the post said a technical report was still forthcoming.
+- Jiménez, Yang, Wettig, Yao, Pei, Press, Narasimhan, "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?" (ICLR 2024, arXiv:2310.06770) — **primary**, for the benchmark's own definition only. Source of the task count (2,294 issues, 12 Python repositories), the fail-to-pass/pass-to-pass test-based grading, and the 1.96% prior best being Claude 2 with BM25 retrieval.
+- [Lesson 1](../../lessons/lesson-1-ai-fundamentals-refresher.md) — Group D (plan-and-execute, ReAct, reflection), Group E (state and checkpointing), and the embeddings/retrieval concepts reused in Step 3.
+- [Lesson 6](../../lessons/lesson-6-async-and-communication.md) — Concept 1 (task-queue job schema and idempotency), Concept 4 (the REST-submit/task-queue/progress-channel decomposition and the 90-times timeout-ratio argument).
+- [Lesson 7](../../lessons/lesson-7-application-architecture-and-security.md) — Concept 1 (blast radius), Concept 3 (least privilege, per-tool credentials), Concept 4 (the back-of-envelope method applied in Step 2).
+- [Lesson 8](../../lessons/lesson-8-safety-and-isolation.md) — Concept 2 (sandboxing agent execution) and Concept 5 (multi-tenant isolation).
+- [Capstone #10](../llm-inference-serving/README.md) and [capstone #9](../rag-contextual-retrieval/README.md) — the model-serving layer treated as out of scope here, and the RAG pipeline contrasted in Step 3.
+- [Glossary](../../appendix/glossary.md) — entries for SWE-bench and resolve rate.

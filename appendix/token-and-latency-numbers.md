@@ -126,12 +126,12 @@ An AI-serving system still runs on top of all of this — a back-of-envelope est
 | Quantity | Value | Provenance |
 |---|---|---|
 | KV-cache bytes per token, formula | `2 (K and V) × num_layers × hidden_dim × bytes_per_value` | (this repo: capstone #10, Step 2) |
-| Worked result for a 13B-class model (32 layers, hidden dim 4096, FP16) | 512 KB/token (0.5 MB/token) | (this repo: capstone #10, Step 2) |
-| KV cache for one full-length 2,500-token conversation (2,000 context + 500 generated), same model | ≈1.22 GB | (this repo: capstone #10, Step 2) |
-| Max concurrent full-length requests on one 80GB GPU, same model (≈52GB available for KV cache after weights) | ≈42 requests | (this repo: capstone #10, Step 2) |
+| Worked result for a 13B model with OPT-13B's shape (40 layers, hidden dim 5120, FP16) | 800 KB/token (819,200 bytes); a 32-layer, 4096-hidden model, the shape of a 7B model, would give 512 KB/token | (this repo: capstone #10, Step 2; the 800 KB figure is Kwon et al., SOSP 2023) |
+| KV cache for one full-length 2,500-token conversation (2,000 context + 500 generated), same model | ≈2.0 GB | (this repo: capstone #10, Step 2) |
+| Max concurrent full-length requests on one 80GB GPU, same model (≈52GB available for KV cache after weights) | ≈26 requests with perfect packing, ≈25 with PagedAttention's ≈4% waste | (this repo: capstone #10, Step 2) |
 | Naive (non-PagedAttention) KV-cache memory waste, from internal + external fragmentation | 60–80% of allocated memory | (this repo: capstone #10, Step 4 — sourced from the vLLM/PagedAttention paper, Kwon et al., SOSP 2023) |
 | Same waste, under PagedAttention | under 4% | (this repo: capstone #10, Step 4 — same source) |
-| Character.AI's reported KV-cache-reuse serving-cost reduction (secondary/unconfirmed) | ~33x | (this repo: capstone #10, Step 1/6 — explicitly flagged there as a widely-covered-secondhand claim with no confirmed still-live primary source, not carrying the same evidentiary weight as the vLLM paper's own figures above) |
+| Character.AI's reported serving-cost reduction since its 2022 launch, measured against its own earlier costs and credited to several changes (attention KV-cache architecture and inter-turn caching among them) | at least 33x | (blog.character.ai, Jun. 20, 2024; this repo: capstone #10, Step 6) |
 | GPU memory capacities this math is sized against | H100: 80GB · H200: 141GB · B200: 180–192GB (sources disagree on the exact B200 figure) | (verified via web search aggregators of vendor datasheets, as of 2026-10-11) |
 
 **Why this is the single most important derivation in this whole appendix to actually be able to reproduce:** capstone #10's own stated lesson is that GPU *memory*, not GPU *compute* (FLOPs), is what actually runs out first in LLM serving — and the formula in the first row above is the entire reason that's true: KV-cache memory grows linearly with context length and concurrent requests, while most back-of-envelope intuition (carried over from CPU-bound systems) reaches for compute first. **(this repo: capstone #10, Step 2)**

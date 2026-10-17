@@ -78,7 +78,7 @@ flowchart LR
 
 **Trade-offs considered:** Larger batch sizes raise aggregate throughput but raise every request's latency, and push GPU memory pressure up (more concurrent KV caches resident at once) — there's no batch size that's simply "better," only one that matches a given product's actual latency SLA (service-level agreement — a committed maximum response time) and GPU budget.
 
-**Case-study pointer:** capstone #10 (`case-studies/llm-inference-serving`) is built directly around this trade-off — the vLLM/PagedAttention paper and Character.AI's reported ~33x serving-cost reduction both hinge on managing the KV cache (the same per-request memory this Concept's batch-size table trades against), not raw FLOPs. This Concept's batch-size/throughput table is the exact mechanism capstone #10's Step 5 (serving architecture) has to tune.
+**Case-study pointer:** capstone #10 (`case-studies/llm-inference-serving`) is built directly around this trade-off — the vLLM/PagedAttention paper and Character.AI's reported serving-cost reduction of at least 33x since 2022 (a bundle of changes that includes KV-cache and inter-turn caching improvements) both hinge on managing the KV cache (the same per-request memory this Concept's batch-size table trades against), not raw FLOPs. This Concept's batch-size/throughput table is the exact mechanism capstone #10's Step 5 (serving architecture) has to tune.
 
 **Source(s) and further reading:**
 
@@ -284,7 +284,7 @@ print(f"Backend redundant: {with_redundancy:.6%}")  # 99.939905%
 
 **Trade-offs considered:** Active-passive is cheaper to run (the standby isn't doing real work, so it can often be a smaller/cheaper instance) but has a real failover delay during which requests fail outright — unacceptable for a latency-sensitive gateway. Active-active eliminates that delay but costs roughly double the running infrastructure for the redundant component, and requires a load balancer (Lesson 4) in front of it to distribute traffic — and if the redundant replicas also hold state (not just stateless compute), it reintroduces Concept 2's consistency question: now you have to decide how those replicas stay in sync.
 
-**Case-study pointer:** capstone #15 (`case-studies/llm-api-gateway`) is built specifically around multi-region model-serving failover — its Step 5 (serving architecture) has to decide which pattern above to apply to its inference-backend pool, and the series-vs-parallel arithmetic above is the exact tool for justifying that decision with numbers instead of intuition.
+**Case-study pointer:** capstone #15 (`case-studies/llm-api-gateway`) applies this arithmetic in its Step 5: a single gateway in front of two providers caps the chain at the gateway's own availability, and an active-active gateway pool, ideally across regions, removes that cap. The series-vs-parallel arithmetic above is the exact tool for justifying that decision with numbers instead of intuition.
 
 **Source(s) and further reading:**
 

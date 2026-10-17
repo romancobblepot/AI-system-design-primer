@@ -1,180 +1,226 @@
-# Capstone #14: Computer-Use / Browser Agent — the Screenshot-Reasoning-Action Loop as a Trade-off Against a Direct-API Agent
+# Capstone #14: Computer-Use Agent — the Screenshot-Reasoning-Action Loop
 
-**Source(s):** Primary — Anthropic, *"Developing a computer use model,"* published on anthropic.com/news/3-5-models-and-computer-use, Oct. 22, 2024 (confirmed by directly fetching the live page). Primary — Anthropic's own open-source reference implementation, the `computer-use-demo` directory of the `anthropic-quickstarts` GitHub repository (`github.com/anthropics/anthropic-quickstarts`), specifically `computer_use_demo/tools/computer.py` (confirmed by directly fetching the raw file) — this is Anthropic's own code, not a third party's reconstruction, and is the source for this document's action-space schema and resolution constants. Secondary, dated separately — Anthropic's current API documentation (`platform.claude.com`, fetched in this session, describing a materially newer toolset version than the one the 2024 announcement shipped) and LiteLLM's third-party provider-integration docs (`docs.litellm.ai`), used only where explicitly flagged below and never conflated with the 2024 announcement's own claims. Secondary, for the benchmark's own definition — Xie et al., *"OSWorld: Benchmarking Multimodal Agents for Open-Ended Tasks in Real Computer Environments,"* NeurIPS 2024 (arXiv:2404.07972) — not Anthropic's source, but the benchmark's own paper, needed to define OSWorld accurately rather than taking Anthropic's framing of it on faith (the same discipline capstone #13 applied to SWE-bench).
+## At a glance
 
-**Confidence.** The qualitative description of how computer use works — screenshots in, mouse/keyboard actions out, in a loop — and the exact benchmark figures and caveat language quoted below are **(source-confirmed)**: each quotation in this document was checked, word for word, against the live page content returned by a direct fetch in this session, not reconstructed from memory or from secondary paraphrase. Anthropic's own GitHub reference implementation is also **(source-confirmed)** for the action-space schema, the recommended-resolution constants, and the "wait before re-screenshotting" design pattern. Two things are explicitly **not** source-confirmed and are flagged at every point they appear: (1) this document's own action-grounding, per-step-latency, and token-cost figures (Steps 2, 4, 5), which Anthropic's 2024 announcement does not publish any version of and are this document's own **(illustrative)** construction, built from the one real constant the announcement and the reference implementation do confirm (a deliberate settle delay between an action and the next screenshot); (2) anything attributed to Anthropic's *current* (as of this writing) API documentation, which describes a toolset version released well after the 2024 announcement and is cited only to show how the pattern has evolved, never backdated to the 2024 claims. The Wayback Machine was not attempted for this document because every primary source needed — the original announcement page and Anthropic's own GitHub repository — was reachable directly; unlike capstone #12's Klarna sourcing, no fallback was needed here.
+| Topic | Summary |
+|---|---|
+| Sources | Anthropic, "Developing a computer use model" (anthropic.com/news/3-5-models-and-computer-use, October 22, 2024), read in full from the live page. Anthropic's own reference implementation, `computer.py` in the `anthropic-quickstarts` repository. Xie et al., "OSWorld" (NeurIPS 2024, arXiv:2404.07972), for the benchmark's own definition. Anthropic's current API docs and LiteLLM's docs, used only where flagged and dated separately. |
+| Problem | Given a task in natural language and a piece of software, complete it by operating the software's own graphical interface — looking at a screenshot, moving a cursor, clicking and typing — the same interface a human operator uses. |
+| The approach | One general capability, not one integration per app. Anthropic: "Instead of making specific tools to help Claude complete individual tasks, we're teaching it general computer skills" *(source-confirmed)*. |
+| The central trade-off | Screenshots in, coordinates out, is far slower and costlier than a direct API for the same task. It is chosen only when no usable API exists, not as a default. |
+| Benchmark | OSWorld, screenshot-only: Claude 3.5 Sonnet 14.9%, next-best 7.8%, and 22.0% with more steps; SWE-bench Verified rose 33.4% to 49.0% *(source-confirmed, Anthropic)*. OSWorld's own humans score about 72% *(source-confirmed, OSWorld paper)*. |
+| Vendor's own caveats | "Still experimental — at times cumbersome and error-prone"; "Claude's current ability to use computers is imperfect"; "begin exploration with low-risk tasks" *(source-confirmed)*. |
+| First to break | Action grounding (a right plan, a click that misses) and prompt injection (the whole screen is the input, so on-screen text can hijack the agent). |
+| Easy-to-miss traps | A pixel coordinate is not a semantic target. A benchmark score is not real task completion. The screenshot is the dominant cost and cannot be cached. One moderate task already outlasts a 60-second gateway timeout. |
+| Practice PDFs | [Study edition](../../capstone-study-and-mock/computer-use-agent/capstone14_computer_use_agent_study.pdf) · [Mock interview](../../capstone-study-and-mock/computer-use-agent/capstone14_computer_use_agent_mock.pdf) |
 
-**Scope note.** This capstone covers an agent whose only way of acting on a target system is through a **GUI (graphical user interface)** — the visual, screen-based interface a human normally operates with a mouse and keyboard, as opposed to a programmatic interface — perceived as a screenshot and acted on via simulated mouse/keyboard input, in contrast to capstone #13's autonomous coding agent, which acts through direct shell/file/API access. Capstone #13's own Scope note already drew this exact boundary before this document existed, calling capstone #14 "a GUI-driven computer-use agent that operates a screen via screenshots and simulated mouse/keyboard input instead of direct shell/file/API access" — this document is that contrasting architecture, confirming rather than overriding that boundary. It does **not** cover: training or fine-tuning the underlying vision-language model (treated as an off-the-shelf component, the same framing capstones #10 and #13 already use); the detailed mechanics of prompt-injection defense or sandboxing design (Lesson 8's F1/F2, referenced not re-derived); or a general survey of every GUI-automation tool on the market (RPA tools, Selenium-style browser drivers) — this document is scoped specifically to the model-in-the-loop, screenshot-perceiving architecture Anthropic's announcement describes, not to scripted automation that never perceives a screen at all.
+Evidence labels used below: *(source-confirmed)* means the claim or quote is in the named primary source. *(illustrative)* means it is this document's own planning assumption or design. Anthropic's current API docs are dated separately from the 2024 announcement throughout; the toolset has since evolved.
+
+### Concepts this case study builds on
+
+| Concept | Where it is taught | One-line recap |
+|---|---|---|
+| ReAct, tool use | [Lesson 1, Group D](../../lessons/lesson-1-ai-fundamentals-refresher.md#d-agent-architecture) | Reason, act, observe, repeat; a tool call is a structured request the app executes. |
+| Prompt caching | [Lesson 1, Group B](../../lessons/lesson-1-ai-fundamentals-refresher.md#b-serving-and-running-models) | A stable prompt prefix can be served from cache; new content cannot. |
+| Back-of-envelope method | [Lesson 7, Concept 4](../../lessons/lesson-7-application-architecture-and-security.md#concept-4-back-of-envelope-estimation-technique--latency-numbers) | State assumptions, decompose, carry units, sanity-check, name the sensitive input. |
+| Async over synchronous REST | [Lesson 6, Concept 4](../../lessons/lesson-6-async-and-communication.md#concept-4-rpc-vs-rest) | A task longer than a gateway's idle timeout cannot be one held-open request. |
+| Blast radius | [Lesson 7, Concept 1](../../lessons/lesson-7-application-architecture-and-security.md#concept-1-monolith-vs-microservices-single-responsibility) | How much one failure or breach can reach; isolation bounds it. |
+| Prompt injection | [Lesson 8, Concept 1](../../lessons/lesson-8-safety-and-isolation.md#concept-1-prompt-injection) | Instructions planted in content the model reads as part of its job. |
+| Sandboxing agent execution | [Lesson 8, Concept 2](../../lessons/lesson-8-safety-and-isolation.md#concept-2-sandboxing-agent-execution) | Isolate an untrusted run from the host and other sessions. |
 
 ---
 
 ## Step 1: Clarify Requirements & Frame the ML/AI Objective
 
-**The actual objective.** Given a task described in natural language (e.g., "book this flight," "fill in this expense report," "find the invoice total on this vendor's portal and enter it into our accounting software") and a target piece of software, the agent completes the task by operating the software's actual graphical interface — the same interface a human operator would use. Per Anthropic's own confirmed description, the agent is given the ability to **"direct Claude to use computers the way people do—by looking at a screen, moving a cursor, clicking buttons, and typing text"** (source-confirmed, direct quote). The model is not handed a bespoke set of task-specific functions; Anthropic is explicit the opposite was deliberate: **"Instead of making specific tools to help Claude complete individual tasks, we're teaching it general computer skills"** (source-confirmed, direct quote) — one general-purpose capability, reusable across any software with a visual interface, rather than one hand-written integration per application.
+### The objective
 
-**What counts as ground truth / success.** Three distinct bars, from loosest to strictest:
-1. **Task completion, as judged by the environment's own final state** — e.g., a form field in a real application now contains the correct value, a file was created, a flight was booked. This is the only bar that matters to an end user, and the hardest to check automatically: "did the real external system end up in the right state" requires either a scripted check against that system or human inspection.
-2. **Benchmark-style, execution-based grading** — Step 6 covers this in full via the **OSWorld** benchmark, defined there in a Sidebar; in short, a task is scored by running an automated check against the actual resulting state of a real virtual-machine environment, not by a human or LLM judging whether the transcript "looks right."
-3. **Per-action grounding correctness** — whether each individual simulated click, keystroke, or scroll did what the model intended (defined in full as its own Sidebar in Step 3, since it's a genuinely new concept this repo has no existing home for). This is a necessary condition for #1, not a replacement for it: every action in a task can be correctly grounded and the task can still fail for a reason unrelated to the GUI interaction (a wrong plan, a misunderstood instruction) — the same distinction Lesson 1's Concept A1 draws between executing an action correctly and deciding the *right* action in the first place.
+Given a task in natural language — book a flight, fill an expense report, read an invoice total on a vendor portal and enter it into accounting software — and a target piece of software, the agent completes the task by operating that software's own graphical interface, the same one a human would use. Anthropic's confirmed description: the agent can "direct Claude to use computers the way people do — by looking at a screen, moving a cursor, clicking buttons, and typing text" *(source-confirmed)*.
+
+The model is not handed task-specific functions. Anthropic is explicit that the opposite was deliberate: "Instead of making specific tools to help Claude complete individual tasks, we're teaching it general computer skills" *(source-confirmed)*. One general-purpose capability, reusable across any software with a visual interface, rather than one hand-written integration per application.
+
+### Three bars for success, loosest to strictest
+
+1. **Real task completion** — the real external system ends in the right state: a field now holds the correct value, a file was created, a flight was booked. The only bar an end user cares about, and the hardest to check automatically.
+2. **Benchmark grading** — OSWorld (Step 6) runs an automated check against the real final state of a virtual-machine environment, not a human or model judging whether the transcript looks right.
+3. **Per-action grounding** — whether each individual click, keystroke or scroll did what the model intended (defined in Step 3). A necessary condition for the first bar, not a replacement: every action can be correctly grounded and the task still fail from a wrong plan or a misread instruction.
 
 ```mermaid
 flowchart TD
-    B3["Bar 3: Per-action grounding\n(did this one click/keystroke\nland where intended?)"] -->|"necessary but\nnot sufficient for"| B2["Bar 2: Benchmark grading\n(OSWorld execution-based\ncheck, Step 6)"]
-    B2 -->|"necessary but\nnot sufficient for"| B1["Bar 1: Real task completion\n(did the real external\nsystem end up correct?)"]
+    B3["Bar 3: Per-action grounding\n(did this one click land\nwhere intended?)"] -->|"necessary but\nnot sufficient for"| B2["Bar 2: Benchmark grading\n(OSWorld, Step 6)"]
+    B2 -->|"necessary but\nnot sufficient for"| B1["Bar 1: Real task completion\n(did the real system\nend up correct?)"]
 ```
 
-**Explicitly out of scope:**
-- Fine-tuning or training the underlying vision-language model.
-- Any claim about exactly how Claude's own internal visual-grounding mechanism works (undisclosed, and this document does not speculate about model internals).
-- A general RPA (robotic process automation) tool survey.
-- The detailed mechanics of prompt-injection defense (Lesson 8's F1) or sandbox isolation (Lesson 8's F2), referenced below but not re-derived.
+### Out of scope
 
-**Trade-offs considered.** Framing the objective as "operate the same GUI a human would" instead of "call a purpose-built API for this task" is not a default choice — it's a choice this capstone's whole point (Step 4) is to show is *usually the worse one, when a usable alternative exists*. Scoping the primary ground-truth bar to "benchmark-style execution-based grading" (OSWorld, #2 above) rather than "did the real production system end up correct" (#1) buys a reproducible, automatable signal — the same trade-off capstone #13 already made explicit for SWE-bench resolve rate versus a human-reviewed merge — at the same cost: a benchmark score is a narrower, cheaper-to-compute proxy for the thing a real deployment actually needs, which is real task completion against real, arbitrary software the benchmark's own fixed task set never saw.
+Training or fine-tuning the underlying vision-language model (treated as off-the-shelf, as capstones #10 and #13 do); any claim about how Claude's internal visual grounding works (undisclosed); a survey of scripted GUI-automation tools (RPA, Selenium) that never perceive a screen; and the detailed mechanics of prompt-injection defence or sandboxing (Lesson 8, referenced not re-derived).
+
+### Trade-offs
+
+Framing the objective as "operate the same GUI a human would" rather than "call a purpose-built API" is not a default. It is the choice Step 4 argues is usually the worse one when a usable API exists. Scoping the main ground-truth bar to benchmark grading rather than real production completion buys a reproducible, automatable signal — the same trade-off capstone #13 made for SWE-bench — at the same cost: a benchmark score is a narrower, cheaper proxy for real task completion against arbitrary software the fixed task set never saw.
 
 ---
 
 ## Step 2: Back-of-Envelope Constraints
 
-Lesson 7's Concept 4 defines the five-step back-of-envelope method (state assumptions, decompose, compute with units, sanity-check the order of magnitude, name the most sensitive assumption), not re-derived here. Applied:
+Lesson 7's five-step method is applied here, not re-derived. Figures are *(illustrative)* unless marked *(confirmed)*.
 
-**Step 1 — state assumptions explicitly.** Everything in this box is **(illustrative)** except where marked **(confirmed)**:
-- **Screen resolution:** 1024×768 pixels — **XGA**, short for "Extended Graphics Array," a 4:3-aspect-ratio display resolution standard. This is **(confirmed)**: the reference implementation's code comment states directly, *"sizes above XGA/WXGA are not recommended"* (source-confirmed, direct quote from `computer.py`), naming XGA (1024×768) and **WXGA** — "Wide XGA," 1280×800, 16:10 — as its two preferred scaling targets, plus a third, **FWXGA** — "Full Wide XGA," 1366×768, ~16:9 — defined in the same file.
-- **Tokens per screenshot:** "roughly 1,000–1,800 input tokens each" — **(confirmed)**, a direct quote from Anthropic's current API documentation (not the 2024 announcement, which publishes no token-cost figure; dated separately per this document's Confidence note). This document uses the range's midpoint, **1,400 tokens/screenshot**, for the calculation below.
-- **Conversation/history text tokens per round-trip:** 800 tokens **(illustrative)** — the system prompt, the task instruction, and the running action history the model needs re-sent each turn (per the agent-loop mechanics in Step 4).
-- **Output tokens per round-trip:** 150 tokens **(illustrative)** — a short statement of what the model observed plus one action request; smaller than capstone #13's 300-output-token round-trip, since a single GUI action (e.g., "click at (512, 340)") is a terser decision than a shell command or code edit.
-- **Round-trips for one moderate task:** 24 **(illustrative)** — chosen to represent a task like filling a multi-field web form across a few screens, where Anthropic's documented practice (Step 4) is to take a fresh screenshot after essentially every action, not just at the start.
-- **Pricing:** $3/1M input tokens, $15/1M output tokens — the same **(illustrative)** anchor Lessons 7 and 8 and capstones #6, #7, and #13 already reuse, kept here for direct comparability rather than inventing a new figure.
-- **Settle delay between an action and the next screenshot:** 500 ms — **(illustrative, but the underlying design pattern is confirmed)**: Anthropic's reference implementation includes a code comment reading, verbatim, *"# delay to let things settle before taking a screenshot"* (source-confirmed) immediately before capturing the next frame; this document's 500 ms figure is the order of magnitude Anthropic's current documentation separately recommends for its own `click_and_wait` helper (described as sleeping 0.5 seconds) — the design practice is confirmed, the exact duration here is this document's own illustrative choice matched to that order of magnitude.
+### Assumptions
 
-**Step 2 — decompose:**
-```
+- **Screen resolution:** 1024x768, XGA (Extended Graphics Array), a 4:3 standard. *(confirmed)*: `computer.py` comments "sizes above XGA/WXGA are not recommended", naming XGA, WXGA (1280x800) and FWXGA (1366x768).
+- **Tokens per screenshot:** roughly 1,000 to 1,800 input tokens *(confirmed, current API docs; dated separately)*. This uses the midpoint, 1,400.
+- **History text per round-trip:** 800 tokens — system prompt, task instruction and running action history, re-sent each turn *(illustrative)*.
+- **Output per round-trip:** 150 tokens — a short observation plus one action request; terser than capstone #13's 300, since "click at (512, 340)" is a smaller decision than a code edit *(illustrative)*.
+- **Round-trips for a moderate task:** 24 — a multi-field form across a few screens, with a fresh screenshot after essentially every action *(illustrative)*.
+- **Pricing:** \$3 per million input tokens, \$15 per million output — this repo's shared anchor *(illustrative)*.
+- **Settle delay before the next screenshot:** 2.0 seconds. *(confirmed)*: `computer.py` sets `_screenshot_delay = 2.0` with the comment "delay to let things settle before taking a screenshot".
+- **Model inference per round-trip:** 2,000 ms *(illustrative)* — the 2024 announcement publishes no latency figure (a confirmed absence).
+
+### Decompose
+
+```text
 input_tokens_per_rt   = image_tokens_per_screenshot + history_text_tokens_per_rt
-total_input_tokens    = round_trips × input_tokens_per_rt
-total_output_tokens   = round_trips × output_tokens_per_rt
-token_cost_per_task   = (total_input_tokens / 1,000,000) × input_price
-                      + (total_output_tokens / 1,000,000) × output_price
+total_input_tokens    = round_trips * input_tokens_per_rt
+total_output_tokens   = round_trips * output_tokens_per_rt
+token_cost_per_task   = (total_input_tokens  / 1e6) * input_price
+                      + (total_output_tokens / 1e6) * output_price
 
 latency_per_step      = screenshot_capture + encode_and_upload + model_inference
                       + action_execution + settle_delay
-total_task_latency    = round_trips × latency_per_step
+total_task_latency    = round_trips * latency_per_step
 ```
 
-**Step 3 — compute step by step, carrying units.**
+### Compute, carrying units
 
-Token cost:
-```
-input_tokens_per_rt  = 1,400 + 800                     = 2,200 tokens
-total_input_tokens   = 24 round-trips × 2,200          = 52,800 tokens  = 0.0528M
-total_output_tokens  = 24 round-trips × 150            =  3,600 tokens  = 0.0036M
+```text
+input_tokens_per_rt  = 1,400 + 800            = 2,200 tokens
+total_input_tokens   = 24 * 2,200             = 52,800 tokens = 0.0528M
+total_output_tokens  = 24 * 150               =  3,600 tokens = 0.0036M
 
-token_cost_per_task  = 0.0528 × $3  +  0.0036 × $15
-                     = $0.1584  +  $0.0540
-                     = $0.2124   ≈  $0.21 per task
-```
+token_cost_per_task  = 0.0528 * 3  +  0.0036 * 15  =  0.1584 + 0.0540  =  0.21   (dollars)
 
-Latency:
-```
-screenshot_capture    =  100 ms   (illustrative)
-encode_and_upload     =  150 ms   (illustrative)
-model_inference       = 2,000 ms  (illustrative — the single largest term)
-action_execution      =   50 ms   (illustrative)
-settle_delay          =  500 ms   (illustrative duration; confirmed design pattern)
+screenshot_capture   =   100 ms   (illustrative)
+encode_and_upload    =   150 ms   (illustrative)
+model_inference      = 2,000 ms   (illustrative, least-grounded term)
+action_execution     =    50 ms   (illustrative)
+settle_delay         = 2,000 ms   (confirmed, computer.py _screenshot_delay = 2.0)
                        --------
-latency_per_step      = 2,800 ms  (2.8 seconds)
-
-total_task_latency    = 24 round-trips × 2.8 s  =  67.2 seconds
+latency_per_step     = 4,300 ms   (4.3 seconds)
+total_task_latency   = 24 * 4.3 s = 103.2 seconds
 ```
 
-**Comparing against a direct-API equivalent of the same logical task.** If the target software exposed a real API for this same operation, the equivalent task might take roughly 2 structured API calls — illustrative, e.g. one call to read current state, one to submit — at a much smaller 300 input / 50 output tokens each (a single structured request/response pair, not an image-laden conversation turn):
+### Compare against a direct-API equivalent
+
+If the software exposed a real API, the same operation might take about 2 structured calls — say one to read state, one to submit — at 300 input and 50 output tokens each, no image:
+
+```text
+direct_api_input_tokens  = 2 * 300 = 600 tokens = 0.0006M
+direct_api_output_tokens = 2 *  50 = 100 tokens = 0.0001M
+direct_api_cost  = 0.0006 * 3 + 0.0001 * 15 = 0.0018 + 0.0015 = 0.0033  (dollars)
+
+cost_ratio       = 0.2124 / 0.0033 = about 64 to 1
+round_trip_ratio = 24 / 2 = 12 to 1
 ```
-direct_api_input_tokens  = 2 × 300 = 600 tokens   = 0.0006M
-direct_api_output_tokens = 2 × 50  = 100 tokens   = 0.0001M
 
-direct_api_cost  = 0.0006 × $3  +  0.0001 × $15  =  $0.0018 + $0.0015  =  $0.0033
+At roughly 300 to 800 ms per API call, the direct version finishes in about 1 to 2 seconds against the loop's 103 seconds — a latency ratio of roughly 50 to 100 times. Two independently derived ratios landing in the same double-digit band, cost and latency, is itself a sanity check: neither is off by an order of magnitude.
 
-cost_ratio    = $0.2124 / $0.0033  ≈  64x
-round_trip_ratio = 24 / 2 = 12x
-```
-At roughly 300–800 ms per direct API call (ordinary network-plus-processing latency, not an image-laden model inference), the direct-API version of this same task completes in on the order of 1–2 seconds total, versus the screenshot loop's 67.2 seconds — a **latency ratio in the same rough order of magnitude as the cost ratio**: dividing 67.2 seconds by this estimate's own "1–2 seconds total" figure gives a latency ratio of roughly **33.6x–67.2x**, a range that does bracket the independently-computed 64x cost ratio even though neither number was derived from the other. This is itself a useful sanity check: two independently-derived ratios landing in the same broad, double-digit-to-double-digit ballpark — not a 2x difference, not a 1,000x one — signals neither number is off by an order of magnitude, the same cross-check discipline capstone #13's own Step 2 applies to its fleet-sizing math.
+### Sanity-check the magnitude
 
-**Step 4 — sanity-check the order of magnitude.** 67.2 seconds for a 24-step GUI task is a plausible order of magnitude for "a human filling out a short multi-screen form while being deliberate about it" — not obviously wrong in either direction (not 0.67 seconds, not 672 seconds). It's also directly comparable to a number this repo already established: Lesson 6's Concept 4 cites AWS ALB's 60-second default idle timeout for a synchronous connection. **A single moderate, 24-step task already exceeds that default** — the direct implication for Step 5's serving architecture below.
+103 seconds for a 24-step GUI task is a plausible order for a human filling a short multi-screen form deliberately — not 1 second, not 1,000. It also clears a number this repo already uses: AWS ALB's 60-second default idle timeout (Lesson 6). A single moderate task already exceeds it, which decides Step 5's serving shape.
 
-**Step 5 — name the assumption the answer is most sensitive to.** **Model inference time per round-trip (2,000 ms)** is both the largest single term in the latency chain (71% of the 2,800 ms step total) and the one this document has least grounding for — Anthropic's 2024 announcement publishes no latency figures for computer use (confirmed absence: a direct fetch, prompted explicitly for any latency claim, returned none). If inference time is closer to 4,000 ms — plausible once the running action history (Step 3's `encode_and_upload`/history context) has grown over several turns — per-step latency rises to 4,800 ms and the 24-step total rises to 115.2 seconds, nearly double this estimate and almost twice AWS ALB's 60-second timeout rather than just barely over it. That's the number worth measuring first in a real deployment, exactly as capstone #13's own Step 2 names its round-trip-count assumption as its most sensitive, least-grounded figure.
+### The most sensitive input
 
-**Trade-offs considered.** Choosing a 24-step task as the illustrative anchor keeps both the cost and latency math in a relatable range, but a real task distribution has a long tail — a multi-page checkout flow or a multi-app workflow could easily run 100+ steps, at which point Step 2's own $0.21/task and 67.2-second figures scale roughly linearly (ignoring the context-growth effect the Step 5 sensitivity note already flags), making this an increasingly expensive and slow way to accomplish something a direct API could do in a handful of calls — which is exactly the gap Step 4 below has to justify crossing at all. Using a flat 1,400-token screenshot estimate for every round-trip is also a simplification: Anthropic's own current documentation recommends pruning older screenshots from a long-running conversation (keeping 20 or fewer images per request) specifically because they otherwise accumulate — meaning, like capstone #13's own flat per-round-trip token estimate, this document's $0.21 figure should be read as a conservative floor for a short task and an underestimate for a long one, not a ceiling in either case.
+**Model inference per round-trip** is the least-grounded term — the 2024 announcement publishes no latency, and the settle delay is now a confirmed constant, not a guess. If inference is closer to 4,000 ms once the action history has grown, per-step latency rises to 6,300 ms and the 24-step task to about 151 seconds. That is the number to measure first in a real deployment, as capstone #13 named its own round-trip count.
+
+### Trade-offs
+
+A 24-step anchor keeps the math relatable, but a real distribution has a long tail: a multi-app workflow can run 100-plus steps, where the \$0.21 and 103-second figures scale roughly linearly, making this an expensive, slow way to do what an API could do in a handful of calls — the gap Step 4 must justify crossing. A flat 1,400-token screenshot each turn is also a simplification: Anthropic's current docs recommend pruning old screenshots (keeping 20 or fewer images per request) because they accumulate, so read \$0.21 as a floor for a short task, not a ceiling.
 
 ---
 
 ## Step 3: Data / Knowledge Pipeline
 
-**What the agent actually perceives at each step — and how it differs from every other agent architecture this repo has covered so far:**
-- **Capstone #13's coding agent** perceives structured, textual context: file contents, shell output, test results — already machine-readable, no visual interpretation required.
-- **Capstone #12's customer-support agents** perceive structured per-customer records and retrieved policy text (Lesson 1, Concepts C1–C4).
-- **This capstone's agent** perceives exactly one thing at every step: **a raw screenshot — a bitmap image of whatever is currently displayed on the target screen** — plus the running history of its own prior actions and the task instruction it started with.
+### What the agent perceives
 
-Nothing about the screen's content arrives pre-parsed into a button's name, a field's label, or a form's current value; the model has to derive all of that from pixels, the same way a human looking at the screen would — the direct, structural reason this architecture needs its own concept (action grounding, defined below) that a JSON-in/JSON-out tool call never needs.
+- **Capstone #13's coding agent** perceives structured text: file contents, shell output, test results — already machine-readable.
+- **Capstone #12's support agents** perceive structured records and retrieved policy text.
+- **This agent** perceives one thing each step: a raw screenshot, a bitmap of whatever is on the target screen, plus the running history of its own prior actions and the original task.
 
-**How a screenshot gets encoded for the model — real mechanics, not a black box.** Per Anthropic's own reference implementation **(source-confirmed)**, the screen is captured "at physical resolution" and resized to a scaled coordinate frame before being sent, because — per that file's own docstring, source-confirmed — "this is the coordinate frame the model emits coordinates in; it differs from the physical display whenever scaling applies." The model is shown (and emits coordinates in) the *scaled* frame, and the application must map those coordinates back onto the *physical* screen before executing the click — a real, confirmed source of error if that mapping is off (e.g. on a high-DPI display, where one physical pixel doesn't map one-to-one to one logical pixel).
+Nothing arrives pre-parsed into a button's name, a field's label or a form's value. The model derives all of it from pixels, the way a human looking at the screen would. That is the structural reason this architecture needs a concept a JSON-in/JSON-out tool call never needs: action grounding.
+
+### How a screenshot is encoded
+
+Per the reference implementation *(source-confirmed)*, the screen is captured at physical resolution and resized to a scaled coordinate frame before being sent, because that is the frame the model emits coordinates in; it differs from the physical display whenever scaling applies. The model sees and answers in the scaled frame, and the application must map its coordinates back onto the physical screen before executing the click — a real, confirmed source of error if that mapping is off, for example on a high-DPI display where one physical pixel is not one logical pixel.
 
 ```mermaid
 flowchart LR
     PHYS["Physical screen\n(e.g. Retina, 2x DPI)"] --> CAP["Capture at\nphysical resolution"]
-    CAP --> SCALE["Resize to scaled\ncoordinate frame\n(e.g. XGA 1024x768)"]
-    SCALE --> MODEL["Model sees scaled frame,\nemits coordinate in\nscaled frame"]
-    MODEL --> MAP["Application maps\nscaled coordinate back\nto physical coordinate"]
+    CAP --> SCALE["Resize to scaled\nframe (e.g. XGA 1024x768)"]
+    SCALE --> MODEL["Model sees scaled frame,\nemits coordinate in it"]
+    MODEL --> MAP["Application maps\nback to physical coordinate"]
     MAP --> CLICK["Click executed at\nphysical coordinate"]
-    MAP -.->|"mapping off\n(e.g. DPI mismatch)"| MISS["Click lands in\nwrong place"]
+    MAP -.->|"mapping off\n(DPI mismatch)"| MISS["Click lands\nin wrong place"]
 ```
 
-Anthropic's own documented guidance generalizes this: on a Retina-class display (2x device pixel ratio), either the screenshot is downscaled by 2x before sending, or the model's returned coordinates are halved before executing — two places to put the same correction, but it must go somewhere, or every click lands wrong by a consistent, predictable factor.
+Anthropic's guidance generalises this: on a 2x display, either downscale the screenshot by 2x before sending, or halve the returned coordinates before executing. The correction must go somewhere, or every click lands wrong by a consistent factor.
 
-**Sidebar — Action grounding.** *(First appearance in this repo of this concept. It's genuinely AI/agent-native — not core infra Lessons 3–7 curate down to, and not already covered by Lesson 1's Groups A–E — so it gets the full inline Sidebar treatment plus a glossary entry, rather than a lesson link that doesn't exist.)*
-- **Why?** Lesson 1's Concept D3 (tool use/function calling, referenced not re-derived) defines how a model requests an action: "a structured request to call one of those functions with specific argument values, which the surrounding application then actually executes and returns the result of." For a conventional tool call (e.g., `propose_refund(customer_id, amount)`, capstone #12's own example), the *argument values themselves* are exactly what the model means — there's no separate step where "the right customer_id" could silently differ from the one actually sent. A GUI action is structurally different: the model doesn't name *what* it's clicking (a semantic target, "the Submit button"), it names *where* — a pixel coordinate — correct only if it lands on the actual, current on-screen location of the intended element. Those two things (intended target, actual coordinate) can diverge for reasons unrelated to whether the model's plan was right.
-- **What?** **Action grounding** is the process — and the failure mode when it goes wrong — of translating a model's intended action on a graphical interface (e.g., "click the Submit button") into the correct concrete low-level input (the exact pixel coordinates of that button on the *current* screen) such that executing that low-level input produces the intended effect. An **action-grounding error** is any case where the model's plan or reasoning was correct, but the concrete action it emitted — the coordinate, the scroll amount, the exact key sequence — didn't correspond to the element or effect intended, so the action "succeeds" mechanically (the click registers, no error thrown) while still being wrong. This is closely related to what OSWorld's own authors call **"GUI grounding"** (confirmed from that paper's finding that its best-performing 2024 model was "primarily struggling with GUI grounding and operational knowledge") — this document treats "action grounding" (this capstone's own term) and "GUI grounding" (OSWorld's term) as naming the same underlying challenge from two sources, while being explicit that this equivalence is this document's own reasoned inference, not a claim either source states in those words.
-- **How?** Applied here: a scrollbar or dropdown menu is a harder target to ground than a large, uniquely-colored button, because its clickable region is small, its visual appearance can be ambiguous, and (per Anthropic's current documentation, confirmed, dated separately per this document's Confidence note) "some UI elements (such as dropdowns and scrollbars) might be tricky for Claude to manipulate using mouse movements" — a direct, sourced instance of this definition. The mitigation that same documentation recommends sidesteps grounding rather than solving it: try a keyboard shortcut (e.g., arrow keys to move a dropdown's selection) instead of a mouse click, since a keyboard action has no coordinate to get wrong.
+### Sidebar: action grounding
+
+First appearance of this concept in the repo, so it gets a full definition and a glossary entry.
+
+**Why.** Tool use (Lesson 1, Group D) defines how a model requests an action: a structured call with argument values the application executes. For `propose_refund(customer_id, amount)`, the argument values are exactly what the model means. A GUI action is different: the model does not name what it clicks (a semantic target, "the Submit button"), it names where — a pixel coordinate — correct only if it lands on the current on-screen location of the intended element. Intended target and actual coordinate can diverge for reasons unrelated to whether the plan was right.
+
+**What.** Action grounding is translating a model's intended action on a graphical interface into the correct low-level input (the exact pixel coordinate of the intended element on the current screen) so that executing it produces the intended effect. An action-grounding error is any case where the plan was correct but the emitted action — the coordinate, the scroll amount, the key sequence — did not match the intended element, so the action "succeeds" mechanically (the click registers, no error thrown) while still being wrong. OSWorld's authors call the same challenge "GUI grounding"; treating the two terms as the same underlying problem is this document's reasoned inference, not a claim either source states in those words.
+
+**How.** A scrollbar or dropdown is harder to ground than a large, uniquely coloured button: a small clickable region, an ambiguous appearance. Anthropic's current docs confirm "some UI elements (such as dropdowns and scrollbars) might be tricky for Claude to manipulate using mouse movements" *(dated separately)*. The mitigation they recommend sidesteps grounding rather than solving it: use a keyboard shortcut (arrow keys to move a selection) instead of a mouse click, since a keyboard action has no coordinate to get wrong.
 
 ```mermaid
 flowchart TD
-    INTENT["Model's intended target\n(e.g. 'click the Submit button')"] --> EMIT["Model emits a pixel\ncoordinate [x, y]"]
-    EMIT --> EXEC["Application executes\nclick at [x, y]\n(no error thrown either way)"]
-    EXEC -->|"coordinate matched\nactual element"| OK["Correctly grounded:\nintended effect happens"]
-    EXEC -->|"coordinate missed\n(small target, ambiguous\nvisual, scaling error)"| ERR["Action-grounding error:\nplan was right, click\nhit the wrong thing"]
+    INTENT["Intended target\n('click the Submit button')"] --> EMIT["Model emits a pixel\ncoordinate [x, y]"]
+    EMIT --> EXEC["Application clicks [x, y]\n(no error either way)"]
+    EXEC -->|"coordinate matched\nthe element"| OK["Correctly grounded:\nintended effect happens"]
+    EXEC -->|"coordinate missed\n(small target, scaling error)"| ERR["Grounding error:\nplan right, click wrong"]
 ```
 
-**A real action-request example, showing exactly what "the model names a coordinate, not a semantic target" means concretely** — the field names inside this call are Anthropic's confirmed action-call shape, from the reference implementation's API-facing schema (the tagging note below spells out exactly which parts are source-confirmed versus illustrative):
+### A real action request
+
+The field names are Anthropic's confirmed action-call shape; the tagging note spells out which parts are confirmed.
+
 ```json
 {
   "type": "tool_use",
   "id": "toolu_01A2bCdeFGhij3klmNOp4qrS",
   "name": "computer",
-  "input": {
-    "action": "left_click",
-    "coordinate": [512, 340]
-  }
+  "input": {"action": "left_click", "coordinate": [512, 340]}
 }
 ```
-There is no field anywhere in this call naming "the Submit button," "the email field," or any other semantic identity — only `[512, 340]`, a raw pixel coordinate the surrounding application executes literally, with no way to check on its own whether that coordinate lands on the element the model's own reasoning (sent separately, as text, in the same turn) intended to click.
 
-*(Tagging note, since this block mixes source-confirmed and illustrative content more finely than most quotes here: the `action`/`coordinate` field names are source-confirmed from `computer.py`'s method signature; the outer `tool_use`/`id`/`name` envelope is Anthropic's general Messages API tool-use block format, not something `computer.py` defines; and the specific `id` string and `[512, 340]` coordinate value are this document's own illustrative placeholders, invented to show the shape, not pulled from any real transcript.)*
+No field anywhere names "the Submit button" — only `[512, 340]`, a raw coordinate the application executes literally, with no way on its own to check whether it lands on the element the model's reasoning (sent separately, as text, in the same turn) intended.
 
-**The full confirmed action vocabulary (`Action_20241022`), Anthropic's own 10-action set at the time of the 2024 announcement** (source-confirmed, directly from `computer.py`):
+Tagging note: the `action` and `coordinate` field names are source-confirmed from `computer.py`; the `tool_use`/`id`/`name` envelope is Anthropic's general Messages API tool-use format; the specific id string and the `[512, 340]` value are this document's illustrative placeholders.
+
+### The confirmed action vocabulary
+
+`Action_20241022`, Anthropic's own 10-action set at the time of the 2024 announcement *(source-confirmed, from `computer.py`)*:
 
 | Action | What it does |
 |---|---|
-| `key` | Press a key or key combination (e.g. `Return`, `ctrl+s`) |
+| `key` | Press a key or combination (e.g. `Return`, `ctrl+s`) |
 | `type` | Type a literal string of text |
-| `mouse_move` | Move the cursor to a coordinate, with no click |
-| `left_click` | Click the left mouse button at a coordinate |
+| `mouse_move` | Move the cursor to a coordinate, no click |
+| `left_click` | Left-click at a coordinate |
 | `left_click_drag` | Click-and-drag from one coordinate to another |
-| `right_click` | Click the right mouse button at a coordinate |
-| `middle_click` | Click the middle mouse button at a coordinate |
-| `double_click` | Double-click the left mouse button at a coordinate |
+| `right_click` | Right-click at a coordinate |
+| `middle_click` | Middle-click at a coordinate |
+| `double_click` | Double-click at a coordinate |
 | `screenshot` | Capture and return the current screen |
 | `cursor_position` | Report the cursor's current coordinate |
 
-Every one of these is a literal, low-level GUI primitive, none specific to any particular software — the concrete form of Anthropic's "general computer skills" design choice quoted in Step 1.
+Every one is a low-level GUI primitive, none specific to any software — the concrete form of the "general computer skills" choice from Step 1.
 
-**The tool's own API-facing definition** (source-confirmed, from `computer.py`'s `to_params` method, which returns `{"name": self.name, "type": self.api_type, **self.options}` with `api_type` hard-coded to `"computer_20241022"`; field names corroborated independently by LiteLLM's third-party provider documentation):
+### The tool's API-facing definition
+
+*(source-confirmed, from `computer.py`'s `to_params`, with `api_type` hard-coded to `computer_20241022`)*:
+
 ```json
 {
   "type": "computer_20241022",
@@ -185,144 +231,181 @@ Every one of these is a literal, low-level GUI primitive, none specific to any p
 }
 ```
 
-**Trade-offs considered.** Sending the model a downscaled screenshot (rather than the full physical resolution) reduces both the image's token cost (Step 2) and the risk of exceeding the model's documented image-size limits, but it also throws away real pixel detail — exactly the mechanism Anthropic's own current documentation names, in its click-troubleshooting table, as one cause when "clicks land in the right area but miss the target": that "detail was lost downscaling a 4K+ source" (source-confirmed, direct quote, scoped in that table specifically to a high-resolution source screen, not stated as a general claim about downscaling) — so the scaling factor is itself a direct trade-off between cost/latency and grounding accuracy, not a free optimization. Choosing to represent the screen as a single flat image (rather than, say, a structured accessibility tree of named UI elements, which some other GUI-automation approaches use instead) is what makes this approach general-purpose across arbitrary software with no per-application integration work — Anthropic's own stated goal — but it's also the direct cause of the action-grounding problem this Sidebar defines; a structured-element representation would make "click the Submit button" a semantic, not a coordinate-based, action, trading away generality (it requires the target software to expose such a structure at all, which most legacy GUIs don't) for grounding reliability.
+### Trade-offs
+
+Sending a downscaled screenshot cuts token cost and image-size risk but throws away pixel detail — which Anthropic's docs name as one cause when "clicks land in the right area but miss the target": "detail was lost downscaling a 4K+ source" *(source-confirmed, dated separately)*. So the scaling factor is itself a trade-off between cost and grounding accuracy, not a free win.
+
+Representing the screen as one flat image, rather than a structured accessibility tree of named elements, is what makes the approach general across arbitrary software with no per-app work — but it is also the direct cause of the grounding problem; a structured representation would make "click the Submit button" a semantic action, trading generality (it requires the software to expose such a structure, which most legacy GUIs do not) for grounding reliability.
 
 ---
 
-## Step 4: Model/Agent Core Design — the Screenshot-Reasoning-Action Loop as a Variant of ReAct, and the Explicit Trade-off Against a Direct-API Agent
+## Step 4: Model/Agent Core Design — the Loop as a Variant of ReAct
 
-**Placing this loop inside Lesson 1's own control-flow vocabulary, rather than treating it as something new.** Lesson 1's Concept D2 already defines **ReAct** in full: "a control-flow pattern where the model alternates, in a loop, between writing out a short reasoning step..., taking an action..., observing that action's result, and then reasoning again about what to do next — continuing until it decides it has enough information to give a final answer." Anthropic's confirmed description of the computer-use loop maps onto this definition almost exactly, and its current documentation (dated separately per this document's Confidence note) names the loop directly: "the repetition of... Claude responding with a tool use request and your application responding to Claude with the results of evaluating that request" is, in that documentation's own words, "referred to as the 'agent loop.'" This document treats the computer-use loop as **a special case of ReAct, not a different pattern** — the same Thought → Action → Observation → repeat shape Lesson 1 names, specialized in two ways that matter here:
+### Placing the loop in Lesson 1's vocabulary
 
-1. **The observation is always a raw screenshot, never a structured result.** A conventional ReAct loop's "observation" step, applied to a weather-lookup tool, returns something already machine-readable — `{"temperature_f": 72}` — usable directly with no further interpretation. This loop's observation is a bitmap the model must visually re-parse from scratch every turn, the direct structural cause of the action-grounding concept (Step 3) a plain function-calling ReAct loop never needs: a weather tool's returned temperature can't be "the wrong temperature because the reading was imprecise," but a screenshot-derived click coordinate absolutely can be wrong despite registering as a mechanically successful click.
-2. **The action space is one small, fixed, general-purpose vocabulary, not many task-specific functions.** Lesson 1's Concept D3 (tool use/function calling, referenced not re-derived) describes the ordinary shape of an agent's toolset: named functions, each wrapping a meaningful, semantically-scoped operation (capstone #12's `propose_refund(customer_id, amount)` is exactly this shape). This loop instead exposes Step 3's 10-action vocabulary (`left_click`, `type`, `key`, `screenshot`, …) as the *entire* toolset, regardless of what software is being operated — the same mechanism D3 defines, applied to a uniform set of GUI primitives instead of a rich, task-specific function library. This is the concrete form of Anthropic's confirmed design choice (Step 1): one general tool, reusable across arbitrary software, instead of one bespoke integration per application.
+Lesson 1, Group D defines **ReAct**: the model alternates, in a loop, between a short reasoning step, an action, observing that action's result, and reasoning again, until it has enough to finish. Anthropic's current docs name the computer-use loop directly as "the agent loop" *(dated separately)*. This document treats the computer-use loop as a special case of ReAct, specialised in two ways:
+
+1. **The observation is always a raw screenshot.** A weather tool's observation `{"temperature_f": 72}` is usable directly; this loop's observation is a bitmap the model must visually re-parse every turn. That is the structural cause of the grounding concept (Step 3): a temperature reading cannot be "wrong because imprecise", but a screenshot-derived click coordinate can be wrong despite a mechanically successful click.
+2. **The action space is one fixed vocabulary.** Ordinary tool use (Lesson 1, Group D) wraps each meaningful operation in a named function, as capstone #12's `propose_refund(customer_id, amount)` does. This loop exposes Step 3's 10 primitives as the entire toolset, whatever software is running — the concrete form of the "general computer skills" choice.
 
 ```mermaid
 flowchart LR
     T["Thought\n(reasoning step)"] --> A["Action\n(e.g. left_click [x,y])"]
-    A --> O["Observation\n(raw screenshot, not\nstructured JSON)"]
+    A --> O["Observation\n(raw screenshot,\nnot structured JSON)"]
     O --> T
     T -.->|"enough info"| F["Final answer /\ntask complete"]
 ```
 
-**The explicit trade-off: why ever choose this slower, costlier, more error-prone loop over a direct-API agent?** Step 2's numbers already show the direct-API alternative wins decisively on cost (≈64x cheaper) and latency (roughly 34x–67x faster) for the same logical task, whenever a usable API exists. So the real design question isn't "which is better in general" — it's "when is the slower, costlier option the *only* option." Three real reasons, not hypothetical ones:
+### Why ever choose this slower, costlier loop?
 
-1. **No API exists at all.** The overwhelming majority of installed software — legacy desktop applications, a decade-old internal line-of-business tool, a vendor's admin console built only for a human operator — has no programmatic interface whatsoever. For this software, "direct-API agent" isn't a faster alternative — it isn't an alternative at all.
-2. **An API exists, but doesn't expose what's needed.** A SaaS vendor's public API frequently covers only its most common use cases, while a specific settings toggle, a report-export option, or a less-common workflow step is only reachable through the vendor's own web UI — the API surface and the GUI surface of the same product aren't guaranteed to be equivalent, and often aren't.
-3. **The task is inherently about arbitrary, not-known-in-advance software.** A browser agent asked to "find the cheapest flight across these three airline sites" or "check whether this specific government portal shows my application as received" is being asked to operate software its builders never integrated with and, for a general browser agent, never will — writing a bespoke scraper or API client per target site doesn't scale to "arbitrary website," exactly the generality Anthropic's "general computer skills" framing (Step 1) is built to buy.
+Step 2 shows the direct-API alternative wins decisively on cost (about 64 times cheaper) and latency (roughly 50 to 100 times faster) whenever a usable API exists. So the real question is when the loop is the only option. Three real reasons:
 
-**Why the loop's "observe" half is load-bearing, not decorative — the compounding math, applied to grounding error.** Suppose a 24-step task (Step 2's illustrative anchor) is executed with no per-step verification — the model blindly executes all 24 actions with no fresh screenshot in between to catch a mis-grounded click before the next action builds on it. Even at a generous 95% per-action grounding accuracy (the same illustrative 95% per-step reliability figure capstone #13's own Step 4 uses, for comparability):
+1. **No API exists at all.** Most installed software — legacy desktop apps, a decade-old internal tool, a vendor admin console built only for humans — has no programmatic interface. For it, a direct-API agent is not a faster alternative; it is not an alternative.
+2. **An API exists but lacks what is needed.** A vendor's public API often covers only common cases, while a specific settings toggle or report-export option is reachable only through the web UI. The API surface and the GUI surface of the same product are not guaranteed to match.
+3. **The task is about arbitrary, not-known-in-advance software.** "Find the cheapest flight across these three airline sites" or "check whether this government portal shows my application as received" means operating software the builders never integrated with and never will. A bespoke scraper per site does not scale to "any website" — exactly the generality the "general computer skills" framing buys.
+
+### Why the observe half is load-bearing
+
+Suppose a 24-step task runs with no per-step verification — all 24 actions executed blindly, no fresh screenshot between them to catch a mis-grounded click before the next builds on it. Even at a generous 95% per-action grounding accuracy (capstone #13's own illustrative per-step figure, for comparability):
+
+```text
+P(all 24 actions grounded, no correction) = 0.95^24 ≈ 0.292  ->  about a 29.2% clean run
 ```
-P(all 24 actions correctly grounded, no correction) = 0.95^24 ≈ 0.292   →   roughly a 29.2% chance of a fully clean run
-```
-Nearly 71% of the time, at least one of 24 actions in an uncorrected sequence would be mis-grounded — not because the plan was wrong, but purely from the accumulated chance of at least one coordinate missing its target along the way. This is **this document's own illustrative sanity check, not a derivation of any disclosed Anthropic figure** — Anthropic publishes no per-action grounding accuracy number — but it's the concrete reason Anthropic's documented recommendation (current docs, confirmed, dated separately) to take a fresh screenshot after essentially every action isn't an optional nicety: without it, a 24-step task's odds of zero uncaught mis-grounded actions are worse than a coin flip. The loop's observation half is exactly ReAct's own "observe before deciding the next action" — applied here to catch an action-grounding error (Step 3) before it compounds, the same structural role capstone #13's "fix mistakes" step plays for a general planning error, specialized to this architecture's own failure mode.
 
-**Trade-offs considered.** Choosing a screenshot-perceiving, coordinate-emitting action space over a direct-API or structured-accessibility-tree alternative buys genuine generality — one capability that works (imperfectly) across any software with a visual interface, with zero per-application integration work — at the direct, measured cost Step 2 already quantified (≈64x the token cost, roughly 34x–67x the latency of an equivalent direct-API task) and the structural cost this Step quantifies (a per-action grounding failure mode a structured tool call never has). Anthropic's own confirmed, remarkably candid framing of this trade-off is itself worth quoting directly rather than paraphrasing: **"At this stage, it is still experimental—at times cumbersome and error-prone"** and **"Claude's current ability to use computers is imperfect"** (both source-confirmed, direct quotes) — not a vendor claiming a finished, reliable product, but a vendor naming the exact trade-off this Step argues for: the loop is chosen only when no cheaper, more reliable alternative exists, never as a default.
+Nearly 71% of the time at least one of 24 actions would be mis-grounded — not from a wrong plan, but from the accumulated chance of one coordinate missing its target. This is an illustrative sanity check, not a derivation of any Anthropic figure (none is published). It is the concrete reason the documented practice of a fresh screenshot after essentially every action is not optional: without it, a 24-step task's odds of zero uncaught mis-grounded actions are worse than a coin flip. The observe half is ReAct's "observe before the next action", here catching a grounding error before it compounds — the same role capstone #13's "fix mistakes" plays for a general planning error.
+
+### Trade-offs
+
+Choosing a screenshot-perceiving, coordinate-emitting action space over a direct-API or accessibility-tree alternative buys real generality — one capability across any visual software, no per-app work — at the measured cost Step 2 quantified and the grounding failure mode this step quantifies. Anthropic's own candid framing is worth quoting rather than paraphrasing: "At this stage, it is still experimental — at times cumbersome and error-prone" and "Claude's current ability to use computers is imperfect" *(source-confirmed)* — a vendor naming the exact trade-off this step argues for: the loop is chosen only when no cheaper, more reliable alternative exists.
 
 ---
 
 ## Step 5: Serving Architecture
 
-**The latency chain per step, made concrete as an actual request/response flow.** Step 2's own decomposition — `screenshot_capture → encode_and_upload → model_inference → action_execution → settle_delay`, repeating once per round-trip — is the serving-level reality underneath this capstone's loop, and it maps onto a real request flow:
+### The latency chain per step
 
-```
+Step 2's decomposition is the serving reality underneath the loop, mapped onto a real request flow:
+
+```text
 Orchestrator process
-   │
-   │ 1. capture current screen  (screenshot_capture, ~100ms illustrative)
-   ▼
-Encode image, build request (running history + task instruction + new screenshot)
-   │  (encode_and_upload, ~150ms illustrative)
-   ▼
-Claude API  ── model_inference (~2,000ms illustrative; Step 2's most sensitive term) ──►
-   │  returns one or more tool_use blocks (Step 3's action schema)
-   ▼
-Orchestrator executes the requested action(s) against the real display/browser
-   │  (action_execution, ~50ms illustrative)
-   ▼
-settle_delay (~500ms illustrative duration; confirmed design pattern — "delay to
-   let things settle before taking a screenshot")
-   │
-   └──► loop back to step 1, until the model returns no further action requests
+   |
+   | 1. capture current screen            (screenshot_capture, ~100 ms)
+   v
+Encode image, build request (history + task instruction + new screenshot)
+   |  (encode_and_upload, ~150 ms)
+   v
+Claude API  -- model_inference (~2,000 ms; Step 2's most sensitive term) -->
+   |  returns one or more tool_use blocks (Step 3's action schema)
+   v
+Orchestrator executes the action(s) against the real display / browser
+   |  (action_execution, ~50 ms)
+   v
+settle_delay (~2,000 ms, confirmed: "delay to let things settle before a screenshot")
+   |
+   +--> loop back to step 1, until the model returns no further action requests
 ```
 
 ```mermaid
 flowchart LR
-    SS["Screenshot capture\n(~100ms)"] --> ENC["Encode + build request\n(history + instruction + screenshot)\n(~150ms)"]
-    ENC --> API["Claude API\nmodel_inference (~2000ms)"]
-    API --> ACT["Orchestrator executes\naction (e.g. left_click)\n(~50ms)"]
-    ACT --> DELAY["settle_delay\n(~500ms)"]
+    SS["Screenshot capture\n(~100 ms)"] --> ENC["Encode + build request\n(~150 ms)"]
+    ENC --> API["Claude API\nmodel_inference (~2000 ms)"]
+    API --> ACT["Execute action\n(e.g. left_click, ~50 ms)"]
+    ACT --> DELAY["settle_delay\n(~2000 ms)"]
     DELAY --> SS
     API -.->|"no further\naction requests"| DONE["Task complete"]
 ```
 
-**Why this can't be one synchronous request — delivering on Step 2's own finding, exactly the way capstone #13's Step 5 delivered on Lesson 6's forward reference.** Step 2 already computed a 67.2-second total latency for a 24-step task, against Lesson 6's Concept 4 cited figure: AWS ALB's 60-second default idle timeout for a synchronous connection. A single moderate computer-use task already exceeds that default — not a multi-hour edge case like capstone #13's 90-minute coding sessions, but enough to rule out a plain synchronous request/response for anything beyond the shortest tasks. The architecture needed is the same shape capstone #13's Step 5 already built for exactly this reason, reused here rather than reinvented — the three-part REST-submit/task-queue/progress-channel decomposition Lesson 6's Concept 4 defines in full, not re-derived a third time here. The diagram below mirrors it directly.
+### Why this cannot be one synchronous request
+
+Step 2 computed about 103 seconds for a 24-step task, against AWS ALB's 60-second default idle timeout (Lesson 6). A single moderate task already exceeds it — not a multi-hour edge case like capstone #13's coding sessions, but enough to rule out a plain synchronous request for anything beyond the shortest tasks. The architecture is the same shape capstone #13 built: the REST-submit, task-queue, progress-channel decomposition (Lesson 6, Concept 4), reused rather than reinvented.
 
 ```mermaid
 flowchart LR
-    C["Caller"] -->|"submit task"| SUB["REST submit call\n(returns task ID\nimmediately)"]
+    C["Caller"] -->|"submit task"| SUB["REST submit\n(returns task id\nimmediately)"]
     SUB --> Q["Task queue\n(Lesson 6, Concept 1)"]
     Q --> BG["Background job:\nscreenshot-reasoning-\naction loop"]
     BG --> PC["Progress channel\n(poll or subscribe)"]
     PC --> C
 ```
 
-**The sandboxing requirement — and why it's not optional for this specific architecture.** Executing simulated mouse/keyboard input against a real display means the orchestrator needs an actual running display environment to act against — a virtual display (e.g., an X virtual framebuffer) for a desktop target, or a real, controllable browser instance for a web target — and Lesson 8's Concept 2 (sandboxing agent execution, referenced not re-derived) applies here at least as strongly as to capstone #13's shell/editor/browser sandbox: whatever the model's actions can reach on that display is exactly this architecture's blast radius (Lesson 7, Concept 1), and because this agent's whole mode of operation is "act like a human operator," a successful attack or bad decision has the same reach a human operator logged into that session would.
+### The sandboxing requirement
 
-**Why prompt injection is an unusually acute risk for this specific architecture — and why Lesson 8's F1 applies here more directly than almost anywhere else in this repo.** Lesson 8's Concept 1 defines indirect prompt injection in full: "the injected instruction is planted in *third-party content* that the model reads as part of doing its job... a web page it fetched, a file it was asked to summarize, or a tool's returned output." A computer-use agent's *only* input, every step, is a rendered view of whatever is currently on screen — if that screen displays a malicious web page or any attacker-controlled content, the injected instruction isn't buried in one retrieved document among many (capstone #9's RAG case) or in one tool's returned output (capstone #13's browser-tool case) — it's the *entirety* of what the model perceives at that step, with no separate "trusted system prompt" channel distinguishing it from legitimate on-screen content the way a delimited, labeled RAG chunk can be (Lesson 8's first mitigation layer). Anthropic's current documentation states this risk directly and starkly (confirmed, dated separately per this document's Confidence note): "Claude will follow commands found in content even when they conflict with your instructions" — the same risk Lesson 8's Concept 1 names generally, confirmed here as specific to exactly this architecture, not a hypothetical.
+Executing simulated mouse and keyboard input against a real display means the orchestrator needs an actual running display to act against — a virtual framebuffer for a desktop target, or a controllable browser for a web target. Lesson 8, Concept 2 applies at least as strongly as to capstone #13's sandbox: whatever the actions can reach on that display is this architecture's blast radius (Lesson 7, Concept 1), and because the whole mode is "act like a human operator", a bad action has the same reach a human logged into that session would.
 
-**Caching and optimization.** Lesson 1's Concept B4 (prompt caching, referenced not re-derived) splits cleanly across this loop's content:
-- **Cacheable:** the system prompt and the tool/action-space definition (Step 3's JSON schema) — identical every round-trip — plus most of the 800 illustrative history-text tokens per round-trip (a real candidate for prefix caching, since most of that history matches the previous turn's, plus one new increment).
-- **Not cacheable:** the screenshot itself — Step 2's dominant cost term, the 1,400-token screenshot, is by definition new, unique pixel content every round-trip and can't be served from a cache the way a repeated system prompt can.
+### Why prompt injection is unusually acute here
 
-This directly limits how much of this loop's cost (Step 2) caching can claw back.
+Lesson 8, Concept 1 defines indirect prompt injection: an instruction planted in third-party content the model reads as part of its job. This agent's only input each step is a rendered view of whatever is on screen. If that screen shows a malicious page, the injected instruction is not buried in one retrieved document (capstone #9) or one tool's output (capstone #13) — it is the entirety of what the model perceives, with no separate trusted-system-prompt channel distinguishing it from legitimate content the way a labelled RAG chunk can. Anthropic's current docs state it starkly: "Claude will follow commands found in content even when they conflict with your instructions" *(source-confirmed, dated separately)* — the general risk Lesson 8 names, confirmed as specific to exactly this architecture.
 
-**Trade-offs considered.** Routing the loop through a task queue (rather than a synchronous request) adds real infrastructure — a queue, a worker pool, a separate progress-polling endpoint — that a short, sub-60-second task doesn't strictly need, but per Step 2's own sensitivity finding (model inference time could plausibly double), relying on "this particular task will probably stay under the timeout" is a fragile bet to build a serving architecture on, which is exactly why capstone #13 made the same choice for its own, much longer tasks. Running the target display inside a dedicated, isolated sandbox (rather than, say, giving the agent a session on a shared, persistent desktop environment) costs real provisioning overhead per task — spinning up a fresh virtual display or browser instance — but bounds the injection/blast-radius risk above to that one task's own sandbox, rather than letting a successfully-injected action reach a shared environment's other, unrelated sessions or credentials.
+### Caching
+
+Prompt caching (Lesson 1, Group B) splits across this loop:
+
+- **Cacheable:** the system prompt and the action-space definition (Step 3's schema), identical every turn, plus most of the 800 history-text tokens, since most of that history repeats with one new increment.
+- **Not cacheable:** the screenshot — Step 2's dominant cost, 1,400 new unique tokens every turn, which cannot be served from cache the way a repeated prompt can.
+
+This directly limits how much of the loop's cost caching can claw back.
+
+### Trade-offs
+
+Routing the loop through a task queue adds real infrastructure a short, sub-60-second task does not strictly need, but per Step 2's sensitivity finding (inference could plausibly double), betting that a task stays under the timeout is a fragile foundation — which is why capstone #13 made the same choice for its longer tasks. Running the display in a dedicated, isolated sandbox costs provisioning overhead per task but bounds the injection and blast-radius risk to that one task's sandbox, rather than letting an injected action reach a shared environment's other sessions or credentials.
 
 ---
 
 ## Step 6: Evaluation, Monitoring, and Iteration
 
-**Offline evaluation — OSWorld, with Anthropic's own confirmed headline figures.**
+### Offline evaluation: OSWorld
 
-**Sidebar — OSWorld.** *(First appearance in this repo of this benchmark; glossary entry added below.)*
-- **Why?** The same reason capstone #13's Sidebar gives for SWE-bench: a model's own transcript of "I clicked the right button" isn't an objective way to know whether a computer-use task actually succeeded — something has to check the real, resulting state of a real environment, automatically and reproducibly.
-- **What?** **OSWorld** is a benchmark and accompanying execution environment, from Xie et al.'s NeurIPS 2024 paper, that evaluates an agent's ability to complete real, open-ended computer tasks — spanning real desktop and web applications across actual Ubuntu, Windows, and macOS environments — by giving the agent free-form mouse/keyboard control and checking completion via an automated, execution-based evaluation script run against the environment's actual final state (file contents, application state), not a human or LLM judgment of the transcript. A **"screenshot-only"** evaluation category restricts the agent's perception to exactly this capstone's architecture — screenshots only, no structured accessibility information — as opposed to a setup that hands the agent a parsed, structured representation of on-screen elements.
-- **How?** Applied here: Anthropic's 2024 announcement reports, as a direct quote confirmed by fetching the page — **"On OSWorld, which evaluates AI models' ability to use computers like people do, Claude 3.5 Sonnet scored 14.9% in the screenshot-only category, notably better than the next-best AI system's score of 7.8%. When afforded more steps to complete the task, Claude scored 22.0%."** Read against OSWorld's own paper, this figure is genuinely low in absolute terms — a different, earlier OSWorld evaluation reported humans completing over 72% of its task set, against the best contemporary model's roughly 12% at that time — the concrete form of Step 4's "still experimental... cumbersome and error-prone" framing: even the model generating the headline 14.9%/22.0% score was, by the benchmark's own terms, resolving well under a quarter of its real-world computer-task set.
+**Sidebar: OSWorld.** First appearance in the repo; glossary entry added.
 
-**Why this isn't the only evidence worth reporting.** The same announcement also reports a confirmed, directly quoted coding-specific result — **"it improves performance on SWE-bench Verified from 33.4% to 49.0%"** — worth naming because it's a *different* kind of improvement than the OSWorld figure: SWE-bench Verified measures the underlying model's general reasoning/coding uplift (the same benchmark family capstone #13's Sidebar defines), not this capstone's own screenshot-and-action loop — the two shouldn't be conflated just because they were announced together.
+**Why.** The reason capstone #13's SWE-bench sidebar gives: a model's own transcript of "I clicked the right button" is not an objective way to know a task succeeded. Something has to check the real resulting state of a real environment, automatically and reproducibly.
 
-**Action-grounding error monitoring — the metric this capstone's own architecture needs that neither OSWorld's pass/fail score nor a general uptime dashboard gives you.** A task failing OSWorld's own grading doesn't by itself say *why* — whether the model's plan was wrong, or the plan was right but a specific action was mis-grounded (Step 3). A real deployment needs this broken apart: logging, for a sampled subset of completed tasks, whether each action's *intended* target (recoverable from the model's own stated reasoning in that turn) matched its *actual* on-screen effect (checkable via the very next screenshot, already captured as part of the loop per Step 4's own observation step) — the concrete, measurable form of this Sidebar's own definition, analogous to capstone #12's own validator catch-rate: both are a *rate at which a specific, named failure mode is caught*, applied here to action grounding instead of validator-blocked bad actions.
+**What.** OSWorld, from Xie et al. (NeurIPS 2024), is a benchmark and execution environment of real, open-ended computer tasks across real desktop and web applications (369 tasks on Ubuntu). An agent gets free-form mouse and keyboard control, and completion is checked by an execution-based script against the environment's actual final state, not a judgment of the transcript. A screenshot-only category restricts perception to exactly this architecture — screenshots, no structured accessibility data.
 
-**The feedback loop.** Tasks that fail OSWorld-style grading, or that production monitoring flags via the action-grounding metric above, route back into one of two places — the same "route production failures back into the thing that needs fixing" shape capstones #9, #12, and #13 already establish:
-- **Step 3's own resolution/scaling choices** — a UI element type that consistently mis-grounds might mean the downscaling factor needs adjusting for that class of target.
-- **Step 1's own task-instruction framing** — a consistently misunderstood instruction is a prompting problem, not a grounding one.
+**How.** Anthropic's 2024 announcement reports, verbatim *(source-confirmed)*: "On OSWorld… Claude 3.5 Sonnet scored 14.9% in the screenshot-only category, notably better than the next-best AI system's score of 7.8%. When afforded more steps to complete the task, Claude scored 22.0%." Read against OSWorld's own paper, this is low in absolute terms: OSWorld reports humans completing about 72% of its task set (72.36%) against the best 2024 model near 12% (12.24%) — the concrete form of Step 4's "experimental… cumbersome and error-prone". Even the model generating the headline 14.9% was, by the benchmark's own terms, resolving well under a quarter of its real-world task set.
+
+### Not the only evidence
+
+The same announcement reports a confirmed coding result: "it improves performance on SWE-bench Verified from 33.4% to 49.0%" *(source-confirmed)*. Worth naming because it is a different kind of improvement: SWE-bench Verified measures the underlying model's general reasoning and coding uplift (capstone #13's benchmark family), not this capstone's screenshot-and-action loop. The two should not be conflated just because they were announced together.
+
+### Action-grounding monitoring
+
+A task failing OSWorld's grading does not by itself say why — a wrong plan, or a right plan with a mis-grounded action (Step 3). A real deployment logs, for a sampled subset of completed tasks, whether each action's intended target (from the model's own stated reasoning) matched its actual on-screen effect (checkable from the very next screenshot, already captured by the loop). That is the measurable form of the grounding definition, analogous to capstone #12's validator catch rate: both are the rate at which a specific named failure mode is caught.
+
+### The feedback loop
+
+Tasks that fail grading, or that the grounding metric flags in production, route back to one of two places — the same "route failures back into the thing that needs fixing" shape capstones #9, #12 and #13 use:
+
+- **Step 3's resolution and scaling choices** — a UI element type that consistently mis-grounds may mean the downscaling factor needs adjusting for that class of target.
+- **Step 1's task-instruction framing** — a consistently misunderstood instruction is a prompting problem, not a grounding one.
 
 ```mermaid
 flowchart LR
-    FAIL["Task fails OSWorld grading\nor trips the action-grounding\nmetric in production"] --> DIAG{"Grounding error,\nor plan/instruction\nerror?"}
-    DIAG -->|"grounding"| S3["Route to Step 3:\nresolution/scaling choices"]
+    FAIL["Task fails OSWorld grading\nor trips the grounding metric"] --> DIAG{"Grounding error,\nor plan/instruction\nerror?"}
+    DIAG -->|"grounding"| S3["Route to Step 3:\nresolution / scaling"]
     DIAG -->|"plan/instruction"| S1["Route to Step 1:\ntask-instruction framing"]
 ```
 
-**Failure modes — Anthropic's own disclosed caveats, not downplayed.** Beyond the "experimental... cumbersome and error-prone" framing already quoted in Step 4, Anthropic's current documentation (confirmed, dated separately per this document's Confidence note) names two further, specific failure patterns relevant to production monitoring:
-- Claude "sometimes assumes outcomes of its actions without explicitly checking their results" — the exact failure Step 4's own observe-and-correct argument exists to reduce, not eliminate.
-- Certain UI elements (dropdowns, scrollbars) are disclosed as disproportionately hard to ground correctly via mouse movement alone.
+### Failure modes Anthropic discloses
 
-A production deployment's monitoring should track error rates broken out by UI-element type for exactly this reason — the same "isolate which specific category is driving the error rate, not just a single blended number" discipline capstone #12's per-specialist-domain error tracking already applies to a different kind of agent.
+Beyond "experimental… error-prone" (Step 4), the current docs name two patterns relevant to monitoring *(source-confirmed, dated separately)*: Claude "sometimes assumes outcomes of its actions without explicitly checking their results" — the exact failure the observe-and-correct argument exists to reduce, not eliminate — and certain UI elements (dropdowns, scrollbars) are disproportionately hard to ground by mouse alone. A deployment's monitoring should break error rates out by UI-element type, the same "isolate which category drives the error rate" discipline capstone #12 applies per specialist domain.
 
-**Trade-offs considered.** Sampling a subset of completed tasks for human action-grounding review (rather than reviewing every task) scales to real production volume but, like every sampled-audit approach this repo has already named (capstone #5/#11's stratified auditing, capstone #12's validator-audit sampling), trades completeness for cost — a grounding failure mode affecting a rare but real UI pattern could go unnoticed longer than it would under full review. Leaning primarily on Anthropic's own disclosed "low-risk tasks" recommendation (quoted in Step 4) as a deployment gate — i.e., restricting this architecture's early production use to tasks where a mis-grounded action is cheap to detect and reverse, rather than ones involving irreversible real-world consequences — is the safest rollout path given both this architecture's own structural error mode (Step 3) and Anthropic's own stated caveats, but it also means this architecture's highest-value use cases (irreversible, consequential actions on legacy software with no API — Step 4's own strongest justification for using it at all) are exactly the ones a cautious rollout defers longest, a real tension this document doesn't resolve for a specific deployment, only names.
+### Trade-offs
+
+Sampling a subset of tasks for human grounding review scales to real volume but, like every sampled audit this repo names (capstone #11's stratified auditing, capstone #12's validator-audit sampling), trades completeness for cost: a rare but real UI pattern's failure could go unnoticed longer than under full review. Leaning on Anthropic's own "low-risk tasks" recommendation as a deployment gate — restricting early use to tasks where a mis-grounded action is cheap to detect and reverse — is the safest rollout given both the architecture's structural error mode and the vendor's caveats.
+
+But it also means this architecture's highest-value uses (irreversible, consequential actions on legacy software with no API — Step 4's strongest justification for using it at all) are exactly the ones a cautious rollout defers longest: a real tension this document names rather than resolves.
 
 ---
 
-## Source(s) and Further Reading
+## Sources and further reading
 
-- Anthropic, *"Developing a computer use model"* (anthropic.com/news/3-5-models-and-computer-use, Oct. 22, 2024) — **primary**; confirmed by directly fetching the live page in this session. Source of every direct quote in this document describing how computer use works ("direct Claude to use computers the way people do—by looking at a screen, moving a cursor, clicking buttons, and typing text"; "Instead of making specific tools to help Claude complete individual tasks, we're teaching it general computer skills"; "To make these general skills possible, we've built an API that allows Claude to perceive and interact with computer interfaces"), the OSWorld figures (14.9%, 7.8%, 22.0%), the SWE-bench Verified figures (33.4% to 49.0%), and the experimental/error-prone caveat language ("At this stage, it is still experimental—at times cumbersome and error-prone"; "Claude's current ability to use computers is imperfect"; "we encourage developers to begin exploration with low-risk tasks"). The page publishes no latency figure for computer use specifically — a confirmed absence, not an omission on this document's part.
-- Anthropic, `anthropic-quickstarts` GitHub repository, `computer-use-demo/computer_use_demo/tools/computer.py` — **primary** (Anthropic's own reference implementation, not a third party's reconstruction); confirmed by directly fetching the raw file. Source of the confirmed 10-action vocabulary (`Action_20241022`), the `computer_20241022` API tool type and its `to_params` output shape, the XGA/WXGA/FWXGA resolution constants and the "sizes above XGA/WXGA are not recommended" comment, the screenshot scaling/coordinate-mapping mechanics, and the "delay to let things settle before taking a screenshot" design pattern.
-- Xie, Zhou, Chen, et al., *"OSWorld: Benchmarking Multimodal Agents for Open-Ended Tasks in Real Computer Environments,"* NeurIPS 2024 (arXiv:2404.07972) — **primary** (for the benchmark's own definition, not for any Anthropic-specific claim); used in Step 1's and Step 6's Sidebar to define OSWorld and its "screenshot-only" evaluation category independently of Anthropic's own framing of the result, and for the earlier human-completion-rate (≈72%) figure used as context for how low Anthropic's own 14.9%/22.0% scores are in absolute terms.
-- Anthropic's current API documentation (`platform.claude.com`, fetched in this session) and LiteLLM's third-party provider documentation (`docs.litellm.ai`) — **secondary**, and explicitly dated separately from the 2024 announcement throughout this document: used only for the per-screenshot token-cost figure ("roughly 1,000–1,800 input tokens each"), the `click_and_wait`/0.5-second settle-delay order of magnitude, the image-pruning recommendation, the "Claude will follow commands found in content even when they conflict with your instructions" injection warning, and the "dropdowns and scrollbars... tricky" and "detail was lost downscaling a 4K+ source" grounding caveats — none of this is backdated to or presented as part of the 2024 announcement's own claims.
-- Lesson 1 (`lessons/lesson-1-ai-fundamentals-refresher.md`), Concept D1 (chatbot vs. agent), D2 (ReAct, referenced throughout Step 4 as the control-flow pattern this loop specializes), D3 (tool use/function calling, referenced throughout Steps 3–4 as the mechanism this loop's action space is built on), and Concept B4 (prompt/semantic caching, referenced in Step 5) — none re-derived.
-- Lesson 6 (`lessons/lesson-6-async-and-communication.md`), Concept 1 (task queues) and Concept 4 (the REST-submit/task-queue/progress-channel decomposition and the AWS ALB 60-second default timeout figure) — reused directly in Step 5, per the same pattern capstone #13's own Step 5 already established for this exact figure.
-- Lesson 7 (`lessons/lesson-7-application-architecture-and-security.md`), Concept 1 (blast radius) and Concept 4 (the five-step back-of-envelope method applied in Step 2).
-- Lesson 8 (`lessons/lesson-8-safety-and-isolation.md`), Concept 1 (prompt injection, applied in Step 5 to this architecture's own acute case) and Concept 2 (sandboxing agent execution, applied in Step 5).
-- `case-studies/autonomous-coding-agent/README.md` (capstone #13) — structural precedent for this document's own Confidence-note discipline, its reuse of Lesson 6's own REST/queue/progress-channel architecture, its 95%-per-step compounding-math worked example (adapted here to action-grounding error instead of general plan-step error), and the explicit Scope-note boundary between the two capstones' architectures that this document confirms rather than overrides.
-- `case-studies/multi-agent-customer-support/README.md` (capstone #12) — precedent for this document's quotation-mark discipline (every quoted span in this document was checked, word for word, against a direct fetch of its source before being presented as a direct quote) and for its sampled-audit framing reused in Step 6's trade-offs.
-- `appendix/glossary.md` — new entries added for **Action grounding / action-grounding error** and **OSWorld**; both defined in full on first use above rather than assumed familiar.
+- Anthropic, "Developing a computer use model" (anthropic.com/news/3-5-models-and-computer-use, October 22, 2024) — **primary**, read in full from the live page. Source of every quote describing how computer use works ("direct Claude to use computers the way people do — by looking at a screen, moving a cursor, clicking buttons, and typing text"; "Instead of making specific tools to help Claude complete individual tasks, we're teaching it general computer skills"), the OSWorld figures (14.9%, 7.8%, 22.0%), the SWE-bench Verified figures (33.4% to 49.0%), and the caveat language ("still experimental — at times cumbersome and error-prone"; "Claude's current ability to use computers is imperfect"; "begin exploration with low-risk tasks"). The page publishes no latency figure for computer use — a confirmed absence.
+- Anthropic, `anthropic-quickstarts` repository, `computer-use-demo/.../tools/computer.py` — **primary**, Anthropic's own reference implementation, read directly. Source of the 10-action `Action_20241022` vocabulary, the `computer_20241022` tool type and `to_params` shape, the XGA/WXGA/FWXGA resolution constants and the "sizes above XGA/WXGA are not recommended" comment, the scaling and coordinate-mapping mechanics, and the `_screenshot_delay = 2.0` settle delay with its "delay to let things settle before taking a screenshot" comment.
+- Xie, Zhou, Chen, et al., "OSWorld: Benchmarking Multimodal Agents for Open-Ended Tasks in Real Computer Environments" (NeurIPS 2024, arXiv:2404.07972) — **primary**, for the benchmark's own definition only. Source of the 369-task Ubuntu benchmark, the screenshot-only category, and the human (about 72%) against best-2024-model (about 12%) baselines used as context for how low the 14.9% and 22.0% scores are.
+- Anthropic's current API documentation (platform.claude.com) and LiteLLM's provider documentation (docs.litellm.ai) — **secondary**, dated separately from the 2024 announcement throughout. Used only for the per-screenshot token range (1,000 to 1,800), the image-pruning recommendation, the "Claude will follow commands found in content…" injection warning, and the "dropdowns and scrollbars… tricky" and "detail was lost downscaling a 4K+ source" grounding caveats — none backdated to the 2024 claims.
+- [Lesson 1](../../lessons/lesson-1-ai-fundamentals-refresher.md) — Group D (ReAct and tool use, the pattern this loop specialises) and Group B (prompt caching, Step 5).
+- [Lesson 6](../../lessons/lesson-6-async-and-communication.md) — Concept 1 (task queues) and Concept 4 (the REST-submit/task-queue/progress-channel decomposition and the 60-second ALB idle timeout), reused in Step 5.
+- [Lesson 7](../../lessons/lesson-7-application-architecture-and-security.md) — Concept 1 (blast radius) and Concept 4 (the back-of-envelope method applied in Step 2).
+- [Lesson 8](../../lessons/lesson-8-safety-and-isolation.md) — Concept 1 (prompt injection, applied to this architecture's acute case) and Concept 2 (sandboxing agent execution).
+- [Capstone #13](../autonomous-coding-agent/README.md) — the direct-access coding agent this screenshot-driven architecture contrasts with, and the precedent for the compounding-error math and the reused serving architecture.
+- [Glossary](../../appendix/glossary.md) — entries for action grounding and OSWorld.

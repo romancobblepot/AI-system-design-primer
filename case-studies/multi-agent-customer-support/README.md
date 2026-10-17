@@ -1,396 +1,338 @@
-# Capstone #12: Multi-Agent Customer-Support Platform — A Secondary-Source Synthesis of Sierra AI's Architecture and OpenAI's Klarna Customer Story
+# Capstone #12: Multi-Agent Customer-Support Platform — Sierra's Supervisors and Klarna's AI Assistant
 
-**Source(s):** Secondary technical coverage only, plus one primary-but-non-technical company blog post — this capstone's sourcing is genuinely different in kind from every other capstone in this repo, and the rest of this section exists to be precise about exactly how.
+## At a glance
 
-- **Sierra AI's architecture:** Sierra's own company blog, *"Constellation of models: the architecture powering Sierra's agents"* (sierra.ai/blog/constellation-of-models, Dec. 3, 2025) — confirmed directly by fetching the live page. This is a **primary** source (it's Sierra's own writing about its own product), but it is **not an engineering teardown**: confirmed directly from the fetched page, it names no specific models or providers, publishes no latency/accuracy/uptime numbers, includes no architecture diagram, and does not explain its own routing or model-selection logic beyond general description. It is a product-marketing overview, not the kind of primary source capstone #13's Cognition blog post or capstone #10's vLLM paper are. Everything else used in this document about Sierra is genuinely **secondary**: Atlan's third-party explainer *"What Is Sierra? The AI Agent Platform for Customer Service"* (atlan.com) — confirmed by direct fetch, and flagged because Atlan sells a competing data-context product and has a commercial interest in portraying vendor-built context layers as risky; third-party technical coverage of Sierra that characterizes Sierra's "Constellation" branding using **planner/executor/validator** terminology — this vocabulary is commonly associated with a Cybernews review, but a direct fetch of the live Cybernews page returned HTTP 403 on repeated attempts, and an independent search for the exact phrase turned up this framing more directly in other third-party write-ups (e.g. an Oboe interview-prep study guide, a separate blog's worked "$500 refund" example) than in any verifiable Cybernews text, so this document cannot confirm Cybernews specifically as the originating source and attributes the terminology to third-party coverage generally rather than standing behind one unconfirmed name, and nothing from it appears in quotation marks below; and RuntimeWire's coverage of Sierra's Context Engine announcement (tied to Sierra's "Horizon" platform) — secondary, and itself substantially built on Sierra's own announcement text, confirmed only at one remove.
-- **OpenAI's Klarna customer story:** Two direct fetch attempts against `openai.com/customer-stories/klarna` and `openai.com/index/klarna/` both returned HTTP 403, and the Wayback Machine was not reachable from this environment either (the standing rule to try it before giving up on a source was followed; it simply didn't work here). This document therefore could **not** read OpenAI's own page text directly, and nothing attributed to it below is a verbatim quote. Instead, the figures used are corroborated across independent press coverage of the same announcement — CX Today, Silicon Canals, and VKTR all report the identical set of numbers, all explicitly attributed to Klarna's own statements and its CEO's own remarks, carried (per those articles) through OpenAI's customer-story page. Every Klarna number in this document is Klarna's own self-reported figure, one month after launch, not an independently audited result, and not a number this document confirmed by reading OpenAI's page itself.
+| Topic | Summary |
+|---|---|
+| Sources | Three Sierra blog posts: "From LLMs to enterprise-grade agents" (October 2, 2025), "Sierra Agent OS 2.0" (November 5, 2025) and "Constellation of models" (December 3, 2025). Klarna's press release "Klarna AI assistant handles two-thirds of customer service chats in its first month" (February 27, 2024). Press coverage of Klarna's later change of course, reported from Bloomberg and Reuters interviews. |
+| Two cases | Sierra is a platform for building customer-service agents. Klarna built its own assistant, which its release says is powered by OpenAI. No source says Klarna uses Sierra, so they are two cases and not one system. |
+| Problem | Resolve customer requests end to end, such as refunds, cancellations and disputes, with an acceptable rate of wrong or policy-violating actions reaching the customer. |
+| Sierra's approach | Agents are assembled from 15 or more models chosen by task. Supervisory agents filter input, audit every action and response, and can switch from observing to intercepting. The goal is bounded error rates, not perfect adherence *(source-confirmed)*. |
+| Klarna's results | In its first month the assistant had 2.3 million conversations, two-thirds of customer service chats, with customer satisfaction on par with human agents, a 25% drop in repeat inquiries, errands resolved in under 2 minutes against 11, and an estimated \$40 million profit improvement in 2024. All are Klarna's own claims *(source-confirmed)*. |
+| Later | Press coverage of interviews in May and September 2025 reports Klarna's CEO saying that the focus on cost led to lower quality and that the company was hiring human agents again *(reported, secondary)*. |
+| Not published | Error rates, validator catch rates, Klarna's architecture, and Sierra's routing logic. The supervisor, specialist and validator pattern in Step 4 is this document's design. |
+| First to break | Cost of false alarms. A validator's compute is cheap, and each wrongly blocked good action becomes a human escalation. |
+| Easy-to-miss traps | Klarna is not shown to be a Sierra customer. An outcome metric is not a correctness metric. A benefit-to-cost ratio that leaves out false positives is overstated by a large factor. |
+| Practice PDFs | [Study edition](../../capstone-study-and-mock/multi-agent-customer-support/capstone12_multi_agent_customer_support_study.pdf) · [Mock interview](../../capstone-study-and-mock/multi-agent-customer-support/capstone12_multi_agent_customer_support_mock.pdf) |
 
-**Confidence.** **Neither Sierra nor Klarna has published a primary engineering teardown of this system** — this search confirms that rather than turning up one — and Sierra's own blog, the one piece of truly primary material available, is itself non-technical. Two specific things in this document are **this repo's own synthesis, not a sourced architectural fact**, and are called out again at the point they're used: (1) whether the "supervisor over a constellation of specialist models" framing (Sierra's own term) and the "planner/executor/validator split" framing (a third party's characterization of Sierra's branding, not Sierra's own term) describe the *same* architecture or two *related-but-distinct* ones — Step 4 below treats this honestly as unresolved, not as a confirmed equivalence; (2) every number in this document's back-of-envelope and validator-catch-rate calculations (Steps 2 and 6) beyond the handful of Klarna figures named above is **illustrative**, invented for this document to make a real teaching point computable, not disclosed by Sierra, Klarna, or OpenAI. Nothing below should be read as "this is how Sierra's or Klarna's system actually works internally" — only as "this is the best reconstruction available from outside coverage, with every seam in that reconstruction marked."
+Evidence labels used below: *(source-confirmed)* means the claim or figure is in the named primary source. *(illustrative)* means it is this document's planning assumption or design. Klarna's figures come from Klarna itself, a month after launch, and are not independently audited.
 
-**Scope note.** This capstone covers the architectural pattern — a routing/supervisory layer, one or more narrowly-scoped specialist agents, and an independent validation layer, operating over a unified per-customer context store — illustrated by Sierra's product and Klarna's deployment. It does **not** cover: training or fine-tuning any of the underlying models (treated as off-the-shelf, the same framing capstone #13 uses for Devin's underlying LLM); the specific enterprise integrations into a real CRM, billing, or order-management backend (represented here by a schema, not a real connector); prompt-injection defense mechanics (Lesson 8's F1, referenced not re-derived); content moderation of user-submitted text (capstones #5/#11's territory); or Sierra's actual proprietary routing/model-selection algorithm or Klarna's actual internal system design — neither company discloses either, and this document does not guess at them.
+### Concepts this case study builds on
+
+| Concept | Where it is taught | One-line recap |
+|---|---|---|
+| Multi-agent orchestration | [Lesson 1, Group D](../../lessons/lesson-1-ai-fundamentals-refresher.md#d-agent-architecture) | A supervisor delegates to agents with distinct roles. |
+| Guardrails and output validation | [Lesson 8, Concept 4](../../lessons/lesson-8-safety-and-isolation.md#concept-4-guardrails-and-output-validation) | Check outputs and actions against a policy before release. |
+| Series availability | [Lesson 7, Concept 1](../../lessons/lesson-7-application-architecture-and-security.md#concept-1-monolith-vs-microservices-single-responsibility) | Services in a chain are less available than one service alone. |
+| Little's law | [Lesson 6, Concept 2](../../lessons/lesson-6-async-and-communication.md) | Items in a system equal arrival rate times time in the system. |
+| LLM as a judge | [Lesson 9, Concept 2](../../lessons/lesson-9-evaluation-and-observability.md#concept-2-offline-evaluation--golden-datasets-llm-as-judge-regression-suites) | A model scoring another model's output, with biases of its own. |
 
 ---
 
 ## Step 1: Clarify Requirements & Frame the ML/AI Objective
 
-**The actual objective.** Resolve a customer-support request — a refund, a subscription change, a billing dispute, a cancellation, an order-status question (Klarna's own named categories, per the corroborated press coverage above: "refunds, returns, payment-related issues, cancellations, disputes, and invoice inaccuracies") — autonomously, end to end, without a human handling the conversation, **while keeping the rate of incorrect or policy-violating actions that reach the customer low enough to be acceptable**. That second clause is load-bearing: a system graded only on "percentage of conversations the AI handled without a human" would be rewarded for confidently taking a wrong action just as much as a correct one — the failure mode Step 4 and Step 6's architecture exists to prevent.
+### The objective
 
-**What counts as ground truth / feedback signal — three distinct measures, not one:**
-1. **Resolution rate** — the fraction of support conversations an agent handles to completion without escalation to a human. Klarna's own disclosed figure, carried through OpenAI's customer story and corroborated by independent press, is that its assistant handled "two-thirds of customer service chats" in its first month. This document treats that as a resolution-rate-shaped number, with one caveat: the corroborating coverage never states whether "handled two-thirds of chats" means "resolved with zero human involvement" versus "primarily handled by the assistant" — a distinction unresolvable from the sources available, named here rather than papered over.
-2. **Escalation rate** — the fraction of conversations an agent deliberately hands off to a human, either because it can't complete the task (a policy exception, a request outside its scope) or because the validator layer (Step 4) blocks a proposed action with no safe alternative. The complement of resolution rate in the simplest framing, but tracked separately in Step 6 because *why* a conversation escalates (an inherent capability gap vs. a caught mistake) is itself a useful signal.
-3. **Validator catch-rate** — defined in full in Step 4's Sidebar, since it's this capstone's own central, previously-undefined concept — the fraction of actually-bad proposed actions an independent checking layer correctly blocks before they reach the customer, distinct from resolution/escalation rate, which only measures *whether* a human got involved, not whether the agent's actions were correct.
+Klarna's release lists what its assistant handles: refunds, returns, payment-related issues, cancellations, disputes and invoice inaccuracies. The objective is to resolve such requests autonomously while keeping the rate of incorrect or policy-violating actions low. A system graded only on how many conversations it handled without a person would be rewarded for a confident wrong action as much as for a right one.
 
-Klarna's other disclosed, corroborated figures — doing the work of roughly 700 full-time agents, cutting average resolution time from 11 minutes to under 2, operating in 23 markets and 35+ languages, customer satisfaction on par with human agents, and an estimated $40M 2024 profit improvement — are all **outcome** metrics (speed, cost, satisfaction), not **correctness** metrics. This document uses them in Step 2 to size the system, not as evidence the system's actions were actually right, since no corroborated coverage discloses an error rate, validator catch-rate, or anything else checkable from outside.
+### The error philosophy Sierra states
 
-**Explicitly out of scope:** the underlying LLMs' training/fine-tuning; the real backend integrations (order management, billing, CRM) a production version would need, beyond the illustrative schema in Step 3; the exact classification/routing algorithm Sierra's supervisor layer uses internally (undisclosed); and any claim about Klarna's or Sierra's actual measured error or catch rates (undisclosed — every such number in this document is flagged illustrative at the point it's introduced).
+Sierra's October post says the models are non-deterministic, so the same input can give different outputs, and that at scale a one-in-ten-thousand hallucination rate is a daily occurrence. It shifts the goal from perfect adherence to bounded error rates, which turns the challenge into a systems problem. It sorts instructions into buckets with different tolerance *(source-confirmed)*:
 
-**Trade-offs considered:** Optimizing purely for resolution rate (minimizing escalations) is the easiest objective to measure and the one most visible in the corroborated press coverage — but a system tuned only against it has a direct incentive to avoid escalating even when it should, which is precisely the risk a dedicated validation layer (Step 4) exists to catch independently of whatever the resolution-rate metric alone would reward. Treating customer satisfaction as a proxy for correctness is tempting (Klarna's own reported CSAT parity with human agents is genuinely good news) but satisfaction and correctness aren't the same axis — a customer can be satisfied by a fast, friendly, confidently-wrong answer they don't have the information to catch themselves, which is exactly why Step 6 tracks validator catch-rate as its own, separate number rather than inferring correctness from satisfaction.
+| Instruction type | Tolerance |
+|---|---|
+| Adversarial input, sensitive topics, illegal activities | Lowest. Maximum adherence, and robotic replies are acceptable. |
+| Brand guidelines, sensitive policies | Lower. High adherence with nuanced replies. |
+| Standard operating procedures and policies | Medium. Follow the spirit and keep flexibility. |
+| Phrasing and tone | Medium to high. Conversational within the company's tone. |
+
+### Three measures
+
+- Resolution rate: the share of conversations handled to completion without a human. Klarna says the assistant handled two-thirds of customer service chats in its first month. The release does not say whether that means no human involvement at all.
+- Escalation rate: the share handed to a person, either because the agent cannot complete the task or because a check blocked the action.
+- Validator catch rate: the share of actually bad proposed actions that an independent check blocks. Neither company publishes one.
+
+### What Klarna reports
+
+All of these come from Klarna's own release *(source-confirmed)*: 2.3 million conversations in the first month, two-thirds of chats; the equivalent work of 700 full-time agents; satisfaction on par with human agents; more accurate errand resolution, leading to a 25% drop in repeat inquiries; errands resolved in under 2 minutes against 11 before; 23 markets, 24/7, more than 35 languages; an estimated \$40 million profit improvement in 2024. The 25% drop in repeat inquiries is the closest thing to a quality measure in the release. It is still Klarna's claim.
+
+### What happened later
+
+Press coverage reports that in May 2025 Klarna's CEO told Bloomberg that the use of AI had been too focused on cost as an evaluation factor, which ultimately leads to a decline in quality, and that Klarna would hire human agents again. It reports a follow-up to Reuters in September 2025 that the automation drive had gone too fast. Klarna says it is combining scalable AI with high-quality human support. These are secondary reports of interviews. They are a reminder that an outcome metric a month after launch is not a long-run correctness result.
+
+### Out of scope
+
+- Model training, and the connectors to real order and billing systems.
+- Sierra's internal routing and model-selection logic, which it does not publish.
+- Content moderation of user text, which [capstone #5 and #11](../harmful-content-detection/README.md) cover.
+
+### Trade-offs considered
+
+Resolution rate is easy to measure and rewards avoiding escalation, even when escalation is right. Satisfaction is not correctness: a customer can be pleased with a fast, friendly wrong answer.
 
 ---
 
 ## Step 2: Back-of-Envelope Constraints
 
-**Anchoring to Klarna's own disclosed scale, corroborated across independent press.** 2.3 million AI-handled conversations in the assistant's first month, reported as roughly two-thirds of Klarna's total customer-service chat volume — implying a total chat volume of approximately 2.3M ÷ (2/3) ≈ **3.45 million conversations/month**, of which roughly 1.15 million/month still go to (or escalate to) a human. Klarna's own self-reported numbers, not independently audited, carried here exactly as disclosed.
+### Klarna's volume
 
-```
-ai_handled_per_month = 2,300,000
-ai_handled_share     = 2/3
+If 2.3 million conversations are two-thirds of chats, total chat volume is 2.3 million ÷ (2 ÷ 3) = about 3.45 million a month, and about 1.15 million went elsewhere. The release gives 114 million global active users and 3.4 million transactions a day for the company:
 
-total_chat_volume_per_month = ai_handled_per_month / ai_handled_share
-                             = 2,300,000 / 0.6667
-                             ≈ 3,450,000 conversations/month
-
-human_handled_per_month = total_chat_volume_per_month - ai_handled_per_month
-                        ≈ 3,450,000 - 2,300,000
-                        = 1,150,000 conversations/month
+```text
+chats a day = 3,450,000 ÷ 30 = 115,000, about 3% of the 3.4 million daily transactions
+AI-handled a day = 2,300,000 ÷ 30 = 76,667
 ```
 
-**Daily AI-handled volume, and concurrent sessions via Little's Law.**
+### Concurrent sessions
 
-```
-ai_handled_per_day = 2,300,000 / 30 days ≈ 76,667 conversations/day
-```
+By Little's law, sessions open at once equal the arrival rate times the time each takes:
 
-**Sidebar — Little's Law.** *(First appearance in this repo of this specific formula; it's a general queueing-theory result, not core infra Lessons 3-7 already curate down to by name, and not already taught in Lesson 1 either, so it gets the inline-Sidebar-plus-glossary treatment rather than a lesson link that doesn't exist.)*
-- **Why?** Klarna's disclosed numbers give a monthly conversation count and an average resolution time, but neither is the number a platform has to provision for: how many sessions are open, consuming compute and holding state, *at the same moment*. Converting "conversations per month" into "concurrent sessions right now" needs a formula, not a guess.
-- **What?** **Little's Law** is a queueing-theory result: for a system in steady state, the average number of items *in* the system (`L`) equals the average arrival rate (`λ`, items per unit time) multiplied by the average time each item spends in the system (`W`): **`L = λ × W`**. It holds regardless of arrival pattern or service-time distribution, which is why it's usable here from only two disclosed numbers.
-- **How?** Applied to Klarna's figures: `λ` is the AI-handled arrival rate in conversations/second, and `W` is the assistant's disclosed average resolution time (2 minutes, down from a prior 11).
-
-```
-lambda = ai_handled_per_day / seconds_per_day
-       = 76,667 / 86,400
-       ≈ 0.887 conversations/sec
-
-W = 120 seconds   (Klarna's own disclosed ~2-minute average resolution time)
-
-L = lambda × W
-  = 0.887 × 120
-  ≈ 106 concurrent sessions, on average, platform-wide
+```text
+arrival rate = 76,667 ÷ 86,400 = 0.89 conversations a second
+sessions in progress = 0.89 × 120 s = at most 106
 ```
 
-**Latency budget per turn — the real constraint this capstone's architecture (Step 4) has to fit inside.** A multi-agent design where a supervisor classifies the request, a specialist drafts a response or action, and a validator checks it before anything executes (Step 4) runs those three model calls **sequentially**, not in parallel, since each needs the previous one's output. Using illustrative per-call latencies (not disclosed by Sierra or Klarna) — a short classification call (~400ms), a longer generation call (~900ms), and a shorter verification call (~500ms):
+Klarna says customers resolve errands in less than 2 minutes, so 120 seconds is an upper bound, and the time to resolve may differ from the length of a chat. An average is not a peak, so provisioning needs a multiple of it *(illustrative: 2 to 4 times)*.
 
-```
-sequential_three_call_latency_floor = 400 + 900 + 500 = 1,800 ms  (1.8 seconds)
+### A check on the 700 agents
 
-versus a single-call monolithic design (one model drafts a reply with no separate check):
-single_call_latency_floor ≈ 900 ms
+If 2.3 million conversations a month took the previous 11 minutes of agent time each, the work would be 421,667 hours a month, which is about 2,600 full-time agents at 160 hours a month. Klarna says 700. For 700 agents to do that work, each conversation takes about 2.9 minutes of agent time:
 
-latency_floor_ratio = 1,800 / 900 = 2x
-```
-
-```mermaid
-flowchart LR
-    subgraph Three["Three-role sequential (Step 4 architecture)"]
-        A1["Classify\n~400ms"] --> A2["Generate\n~900ms"] --> A3["Verify\n~500ms"] --> A4["Total: 1,800ms"]
-    end
-    subgraph Mono["Monolithic single-call design"]
-        B1["Draft + decide\n~900ms"] --> B2["Total: 900ms"]
-    end
+```text
+700 × 160 h × 60 = 6.72 million minutes ÷ 2.3 million conversations = 2.9 minutes
 ```
 
-Before any network, gateway, or queuing overhead, the three-role architecture imposes roughly **twice** the response-time floor of a single-call design — a real cost of this capstone's central architectural choice, not a free improvement, and the number Step 4's trade-off against a monolithic agent weighs against directly.
+So the 11 minutes was probably elapsed time per errand including waiting, and agents handled several chats at once. The figures cannot be combined without that definition.
 
-**Trade-offs considered:** The 106-concurrent-session figure is an *average*, not a provisioning target — real support traffic isn't uniform across 24 hours, and Little's Law says nothing about peak load; a platform that provisions only for the 24-hour average will be under capacity during Klarna's own likely peak hours, so a real deployment would size for something like 2-4x this average as a rough peak-to-average ratio (illustrative — Klarna discloses no hourly distribution). The per-call latency assumptions feeding the 1.8-second floor are this estimate's most sensitive input, in the same sense capstone #13's Step 2 names its own round-trip-count assumption as its most sensitive one: if the validator call alone takes 2 seconds instead of 500ms (plausible if it has to re-retrieve policy context, Step 3), the three-call floor more than doubles again, which is exactly the kind of number worth measuring first in a real prototype rather than trusting this illustrative split.
+### Errors at scale
+
+Sierra's one-in-ten-thousand example is arithmetic. With 76,667 conversations a day and an assumed 8 agent messages each, 613,000 messages a day at one in ten thousand is about 61 problem messages a day *(illustrative)*.
+
+### Latency of a three-role chain
+
+If a supervisor, a specialist and a validator run one after another, the floor is the sum. With assumed latencies of 400, 900 and 500 ms, it is 1.8 seconds, twice a single 900 ms call *(illustrative)*. Sierra says that for simple tasks its models are chosen to satisfy tighter latency constraints for natural-sounding voice conversations.
+
+### Trade-offs considered
+
+The latency assumptions are the most sensitive input. A validator that must re-retrieve policy could take 2 seconds, which changes the floor more than any other term.
 
 ---
 
 ## Step 3: Data / Knowledge Pipeline
 
-**Two genuinely different data sources, not one — a distinction worth being explicit about before either gets conflated with the other.**
+### Customer context
 
-1. **Per-customer context** — what Sierra's own secondary coverage names the **Agent Data Platform** (and, per a later Sierra announcement covered by the same secondary sources, a "Context Engine"): a data-integration layer that unifies a customer's history and current state — billing status, subscription state, prior conversation transcripts, order/shipment history — across sessions, channels, and backend systems of record, so an agent isn't starting every conversation from zero. This isn't a new concept: it's Lesson 1's own Concept E2, **long-term memory** ("information about a user, a task, or past interactions that an agent stores *outside* the current conversation... so it can be retrieved and reused in future, separate sessions"), applied at enterprise, cross-channel, cross-system scale rather than within a single agent's private store. The genuinely new piece Sierra's secondary coverage adds is the **unification** step itself: per the Atlan explainer (secondary, flagged above for its commercial interest in this framing), raw CRM and billing records alone aren't enough for an agent to act on a customer's order or account — something has to merge them into one queryable representation first, a data-integration problem layered on top of E2's memory concept, not a replacement for it.
-2. **Policy/knowledge-base data** — the company's refund rules, eligibility policies, and FAQ content that *every* customer's conversation draws on, regardless of which customer is asking. A shared corpus, not a per-customer one — exactly the retrieval problem Lesson 1's Concepts C1-C4 and capstone #9 (`case-studies/rag-contextual-retrieval`) already cover in full, referenced here not re-derived. The distinction matters operationally: a specialist agent (Step 4) needs *both* kinds of context for a single request (this customer's own billing history, *and* the general refund policy that applies to everyone), retrieved from two structurally different sources with different freshness and consistency profiles.
+Sierra's November post describes the Agent Data Platform as the memory and intelligence layer of its Agent OS. It unifies every conversation, the unstructured data in calls, chats and emails, with structured data: customer data, billing systems, inventory, policies and transactions. The aim is for an agent to remember prior conversations and preferences, surface insights and act on a customer's behalf *(source-confirmed)*.
 
-**Freshness and consistency — where Lesson 3's CAP-theorem material applies directly.** Per-customer context has a real consistency requirement capstone #9's largely-static document corpus doesn't: if a specialist agent just processed a refund in this same conversation, the *very next* turn's context has to reflect that refund as already applied — a stale read here directly causes a double-refund or a contradictory reply. This is Lesson 3's Concept 2 (CAP theorem, consistency patterns) applying to exactly the case Lesson 1's own E2 entry already flagged generically ("long-term memory... inherits the same consistency questions... that Lesson 3's CAP-theorem concept covers generally") — referenced here as that flag's resolution: the per-customer context store needs **strong consistency** (Lesson 3's own term, referenced not re-derived) for at least the subset of fields a just-completed action touches, even if the rest of the store can tolerate eventual consistency.
+### Policy and knowledge
 
-**An illustrative per-customer context record** (Sierra and Klarna disclose no real schema; this is this document's own construction, shaped the way Atlan's secondary description implies — unifying several systems' data under one customer identity):
+Rules such as refund eligibility are shared by every customer. That is a retrieval problem like the one in [capstone #9](../rag-contextual-retrieval/README.md). A specialist needs both the customer's records and the shared policy for one request, from two sources with different freshness.
+
+### Consistency
+
+If an agent has just processed a refund, the next turn's context must show it, or the agent can refund twice. That needs a strong read for the fields an action touches, as Lesson 3 describes. The sources do not say how Sierra or Klarna do it.
 
 ```json
 {
   "customer_id": "cust_8f21a0",
   "last_updated_at": "2026-10-11T14:32:05Z",
-  "subscription_state": {"plan": "pay_in_4", "status": "active", "next_payment_due": "2026-10-20"},
-  "recent_orders": [
-    {"order_id": "ord_55213", "status": "delivered", "amount_cents": 8499, "last_action": null}
-  ],
-  "open_disputes": [],
-  "conversation_history_summary": "Asked about a late delivery on 2026-10-05; resolved by the assistant with a shipping-delay explanation, no action taken.",
-  "channel_history": ["app", "email"]
+  "recent_orders": [{"order_id": "ord_55213", "status": "delivered", "last_action": null}],
+  "open_disputes": []
 }
 ```
 
-`last_updated_at` is the field a strong-consistency write (e.g. a just-processed refund) must update synchronously, so the very next read in the same conversation reflects it; `recent_orders[].last_action` is where a double-refund bug would show up first, if a stale read let a specialist agent re-propose an action a prior turn had already taken.
+The schema is illustrative. `last_action` is where a double refund would show first.
 
-**Trade-offs considered:** Unifying per-customer data across every channel and backend system into one queryable store (the Agent Data Platform pattern) buys real continuity — an agent that doesn't re-ask a question the customer already answered somewhere else — but concentrates a large volume of sensitive account and billing data into one layer that now has to be the platform's single most carefully access-controlled component, a multi-tenant-isolation concern (Lesson 8's F5, already defined in full there — silo/pool/bridge, referenced not re-derived) that gets sharper, not milder, the more systems get unified into it. Keeping per-customer context and shared policy knowledge in two separate retrieval paths (rather than merging them into one corpus) costs an extra retrieval call per turn, but avoids the correctness risk of ever indexing one customer's private billing data alongside content that's meant to be the same for every customer.
+### Trade-offs considered
+
+One unified store buys continuity and concentrates sensitive billing data in the layer that most needs tight access control. Keeping customer data and shared policy in separate retrieval paths costs a second call and avoids indexing private data next to shared content.
 
 ---
 
-## Step 4: Model/Agent Core Design — Supervisor/Specialist/Validator, and the Honest Gap With "Planner/Executor/Validator"
+## Step 4: Model/Agent Core Design
 
-**The architecture, confirmed from Sierra's own blog (primary-but-non-technical, per the Confidence note above).** A **supervisor agent** is, per Lesson 1's own Concept D5 (multi-agent orchestration, referenced not re-derived), "a designated 'supervisor' agent that delegates subtasks" — concretely here, the agent that receives an incoming request and decides which **specialist agent** — a distinct, narrowly-scoped model or role assigned to one category of task (a billing specialist, a returns specialist, a subscription-management specialist) — should handle it. Sierra's own confirmed language for the specialist layer is a **"constellation of models"**:
-- Agents "assembled using 15+ frontier, open-weight, and proprietary models."
-- Selected per task by need — low-latency tool calling, high-precision classification, long-context reasoning, and tone — each treated as a separate need with a separate model fit.
-- "Task-specific evaluations" decide which model earns which role.
-- Automated failover to an equivalent model if a provider degrades.
+### What Sierra describes
 
-**The validator/guardrail agent — this capstone's own central concept, genuinely new, no existing Lesson 1-6 or Lesson 8 home for the *architectural role* specifically.**
+Sierra's December post says agents are assembled from 15 or more frontier, open-weight and proprietary models, chosen by task *(source-confirmed)*:
 
-**Sidebar — Validator/guardrail agent as a distinct architectural role.** *(First appearance in this repo of this specific role-level concept; a glossary entry is added alongside it.)*
-- **Why?** Lesson 8's F4 Concept already defines the *mechanisms* a guardrail can use — schema-constrained output, content filtering, human-in-the-loop approval gates — in full, not re-derived here. But F4 is silent on a different question: *who* runs those checks, relative to *who* decided the action in the first place. A specialist agent asked to "double-check your own answer" (Lesson 1's own **reflection** control-flow pattern, already defined there) is still the same model, in the same conversation, with the same context and blind spots that produced the original answer — Lesson 9's own cited LLM-as-judge finding (Zheng et al., referenced not re-derived: a judge model can favor its own family's writing style) confirms this exact risk in a different setting, and generalizes here as a reasoned inference, not a direct claim either source makes: a model checking its own proposed action is structurally less independent than a *separate* check, before even asking whether that check uses a different mechanism (F4's territory).
-- **What?** A **validator (or guardrail) agent** is a distinct agent — a separate model invocation, with its own narrower context and job — whose only responsibility is checking a specialist agent's *proposed* action against policy, correctness, and safety constraints **before that action executes or reaches the customer**, rather than being folded into the same call that produced the action. An architectural separation-of-roles claim, distinct from and complementary to F4's mechanism-level content: a validator's check can itself use F4's schema-constrained output, content filtering, or human-in-the-loop gate — the point is that the check happens in a separate invocation the specialist's reasoning never sees, not that it uses a different technique.
-- **How?** Applied to this capstone: the teaching point is that validator/guardrail agents are a distinct role from the agent that takes the action, so one bad tool call doesn't reach the customer unchecked — the architecture below and Step 6's worked numbers are this document's concrete answer. **Validator catch-rate** — this concept's own evaluation metric, used throughout Step 6 — is the fraction of actually-bad proposed actions (ones that would have been incorrect or policy-violating if executed unchecked) the validator correctly blocks or flags, out of all actually-bad actions proposed to it; a recall measure over the validator's own judgment, not a measure of the specialist's error rate (Step 6 keeps those two numbers explicitly separate).
+- Low-latency tool calling and decision-making, for simple tasks such as order management and lookups.
+- High-precision classification, for example identifying suspicious behavior.
+- Long-context reasoning, for complex policies and dense technical information.
+- Tone, so that the agent sounds warm and on-brand.
 
-**The planner/executor/validator framing — a different secondary source's characterization, honestly reconciled rather than silently merged.** Third-party technical coverage of Sierra's product (secondary; this vocabulary is commonly associated with a Cybernews review, but repeated direct-fetch attempts against the live Cybernews page returned HTTP 403, and an independent search for the exact phrase found it more directly in other third-party write-ups than in any verifiable Cybernews text — so this document cannot confirm Cybernews specifically as the originating source and attributes it to third-party coverage generally, per the Confidence note) describes Sierra's "Constellation architecture" using **planner/executor/validator** vocabulary:
-- A **planner** agent figures out what the customer wants and decomposes the request into steps.
-- **Executor** agents carry those steps out against connected systems.
-- **Validator** agents check the result against company policy before anything is finalized.
+It says no single model meets every task's constraints, and that a model that reasons well often degrades when forced to answer faster. It runs task-specific evaluations, looks for gaps, and fine-tunes models where off-the-shelf ones fail. Its Agent OS has modular task abstractions that isolate responsibilities: retrieval, classification, tools, policies and tone. Certain tasks get more agency, which is enabled by employing supervisors to enforce guardrails, policies and quality checks.
 
-Sierra's own blog, fetched directly, does **not** use this terminology — it describes model selection per task-type plus "supervisors" enforcing guardrails, without naming a formal planner/executor/validator trio. This document's own honest reconciliation, offered as reasoned synthesis rather than sourced fact: **supervisor/specialist and planner/executor are plausibly the same underlying idea described two ways** — a supervisor that routes by domain (Sierra's framing) is functionally similar to a planner decomposing a request into steps for the right executor(s) to carry out (this third-party framing), especially when a request needs only one specialist's single action. They are **not obviously identical**, though, for a request needing *several* sequential actions from *one* specialist — that shape is closer to Lesson 1's own **plan-and-execute** control-flow pattern (already defined there in full) running *inside* a single specialist's own turn, with the supervisor's routing decision happening only once, up front. Both framings agree on one point this document treats as confirmed rather than speculative: a validator (whatever it's called) sits structurally apart from whichever agent actually drafted or took the action.
+### The supervisors
 
-**The explicit trade-off against a single monolithic agent handling everything:**
-- **Monolithic design** — one model, one call, drafts the reply *and* decides whether to send it — is simpler to build, has no 1.8-second three-call latency floor (Step 2), and avoids the coordination cost of defining who routes what to whom.
-- **Where it fails:** it fails the independence argument this Sidebar makes — the same context window, training-data blind spots, and prompt framing that produced a wrong answer are also what the model would use to "check" that same answer. Exactly why this capstone's teaching point is a distinct role, not a second question tacked onto the first model's own turn.
-- **The three-role design's cost:** a real latency and infrastructure cost — Step 2's 2x floor, three services to deploy and keep healthy instead of one. Lesson 7's own Concept 1 series-availability math (referenced not re-derived) applies directly: three services chained in series, each independently as reliable as a single monolith, is *less* available than the monolith absent redundancy — a cost paid specifically to buy the independence a monolithic design structurally cannot offer.
+The October post describes them in detail *(source-confirmed)*:
 
-**A supervisor-routing and validator-check pseudocode sketch, this document's own construction, in the same style as Lesson 8's Hands-On Walkthrough:**
+- Every production agent is managed by several supervisory agents. They play different roles and use different LLMs depending on the task. Each supervisor's role is well defined, its level of agency can be controlled individually, and it can be evaluated and improved independently.
+- Input filtering: one supervisor detects and intercepts threats in the user's input, from multi-turn context poisoning to jailbreaks.
+- Output interception: supervisors audit an agent's every action and response for non-compliance or harmful language. For high-risk topics a supervisor can switch from observing to intercepting. If a fix would change the meaning materially or add too much latency, it can escalate or end the conversation.
+- Detecting underspecification: supervisors look for ambiguous situations, combined with filters for sensitive topics.
+- Reviews after a turn and after a conversation, combining fast, high-recall detection with slower, high-precision reasoning, which surfaces and logs defects.
+
+The posts do not publish catch rates, error rates or the routing logic.
+
+### The pattern used in the rest of this case study
+
+Sierra's supervisors enforce policy. They are not described as routing a request to a billing or a returns specialist. The design below, a supervisor that routes by domain, specialists that propose actions and a separate validator, is this document's pattern for teaching *(illustrative)*. It is consistent with Sierra's description of independent supervisors and does not claim to be Sierra's design.
+
+### Sidebar: a validator as a separate role
+
+A model asked to check its own answer has the same context and blind spots that produced it. A separate check, in its own call and with its own narrower context, is more independent. The check can use any mechanism from Lesson 8: a schema, a content filter or a human gate. The point is the separation. Sierra's description that each supervisor can be evaluated independently supports it, and the stronger claim that a validator should never see the specialist's reasoning is this document's choice.
 
 ```python
-SPECIALISTS = {"billing": billing_specialist, "returns": returns_specialist, "subscription": subscription_specialist}
-
-def handle_support_turn(session, customer_message):
-    # Supervisor: routing only -- no drafting, no action-taking
-    intent = supervisor_classify(customer_message, session.context_summary)
-    specialist = SPECIALISTS[intent]
-
-    # Specialist: drafts a reply and/or a proposed action, using both data
-    # sources from Step 3 -- per-customer context and shared policy knowledge
-    draft = specialist.propose(customer_message, session.per_customer_context, policy_kb.retrieve(intent))
-
-    if draft.proposed_action is None:
-        return draft.reply_text  # pure Q&A turn -- no state-changing action to validate
-
-    # Validator: a SEPARATE call, never sees the specialist's own reasoning trace,
-    # only the proposed action plus the policy/context it needs to check it against
-    verdict = validator_check(draft.proposed_action, session.per_customer_context, policy_kb.retrieve(intent))
-
+def handle_turn(session, message):
+    intent = supervisor_classify(message, session.summary)
+    draft = SPECIALISTS[intent].propose(message, session.customer, policy.retrieve(intent))
+    if draft.action is None:
+        return draft.reply
+    verdict = validator_check(draft.action, session.customer, policy.retrieve(intent))
     if verdict.approved:
-        execute(draft.proposed_action)
-        return draft.reply_text
-    else:
-        return escalate_to_human(session, draft.proposed_action, verdict.reason_code)
+        execute(draft.action)
+        return draft.reply
+    return escalate_to_human(session, draft.action, verdict.reason)
 ```
 
 ```mermaid
 flowchart TD
-    MSG["Customer message"] --> SUP["Supervisor\nclassify intent"]
-    SUP --> SPEC{"Route to specialist"}
-    SPEC -->|billing| S1["Billing specialist"]
-    SPEC -->|returns| S2["Returns specialist"]
-    SPEC -->|subscription| S3["Subscription specialist"]
-    S1 & S2 & S3 --> DRAFT["Proposed action\n+ reply text"]
-    DRAFT -->|"no action, pure Q&A"| REPLY["Reply to customer"]
-    DRAFT -->|"action proposed"| VAL["Validator\n(separate call,\nno specialist reasoning trace)"]
-    VAL -->|approved| EXEC["Execute action"]
-    EXEC --> REPLY
-    VAL -->|rejected| ESC["Escalate to human"]
+    MSG["Customer message"] --> SUP["Supervisor: classify"]
+    SUP --> SPEC["Specialist proposes action and reply"]
+    SPEC -->|"no action"| REPLY["Reply"]
+    SPEC -->|"action"| VAL["Validator: separate call"]
+    VAL -->|"approved"| EXEC["Execute, then reply"]
+    VAL -->|"rejected"| ESC["Escalate to a person"]
 ```
 
-A proposed-action schema and the validator's own verdict schema, both schema-constrained per Lesson 8's F4 (referenced, not re-derived — the mechanism this validator call would actually use):
+A verdict that names the policy it applied is auditable:
 
 ```json
-{
-  "name": "propose_refund",
-  "strict": true,
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "ticket_id": {"type": "string"},
-      "customer_id": {"type": "string"},
-      "refund_amount_cents": {"type": "integer", "minimum": 0},
-      "reason_code": {"type": "string"}
-    },
-    "required": ["ticket_id", "customer_id", "refund_amount_cents", "reason_code"],
-    "additionalProperties": false
-  }
-}
+{"approved": false, "reason_code": "amount_exceeds_policy", "policy_citation": "refund-policy-3.2"}
 ```
 
-```json
-{
-  "name": "validator_verdict",
-  "strict": true,
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "approved": {"type": "boolean"},
-      "reason_code": {"type": "string"},
-      "policy_citation": {"type": "string"}
-    },
-    "required": ["approved", "reason_code", "policy_citation"],
-    "additionalProperties": false
-  }
-}
-```
+### Against a single monolithic agent
 
-`policy_citation` on the verdict schema is a deliberate design choice, not a filler field: it forces the validator's output to name *which* policy rule it checked the proposed `refund_amount_cents` against, making a rejected (or approved) verdict auditable after the fact rather than a bare yes/no with no trace of the reasoning behind it.
+One model drafting and checking is simpler and has no extra latency, and it shares its own blind spots. The three-role design costs the latency of Step 2 and three services to keep healthy. In series, each 99.9% available, they are 99.7003% available, about 26.3 hours of downtime a year. With an active pair per service the chain reaches about 99.9997%, about 1.6 minutes a year, at the cost of six replicas.
 
-**Trade-offs considered:** Routing by domain (billing vs. returns vs. subscription) up front, Sierra's own apparent framing, is simpler to reason about and lets each specialist's prompt and fine-tuning stay narrowly scoped — but it assumes a request maps cleanly onto one domain, which breaks down for a request that's genuinely both (a subscription cancellation that also needs a prorated refund); a planner-style decomposition (this third-party framing) handles that case more naturally by not committing to a single specialist up front, at the cost of the extra planning step's own latency and failure surface. Keeping the validator's call structurally separate from the specialist's (never sharing the specialist's reasoning trace, only its proposed action) is what buys the independence this Sidebar argues for, but it also means the validator has to re-retrieve whatever policy/context it needs on its own (Step 3's shared and per-customer data both get fetched twice, once per role) rather than reusing the specialist's own retrieval — a real, duplicated cost paid specifically to avoid the correlated-blind-spot risk a shared context would reintroduce.
+### Trade-offs considered
+
+Routing by domain keeps each specialist narrow and assumes a request fits one domain, which fails for a cancellation that also needs a prorated refund. The validator must retrieve its own context, so retrieval happens twice.
 
 ---
 
 ## Step 5: Serving Architecture
 
-**Request flow at serving time** — shown in the diagram below. Two details the diagram can't convey on its own:
-- **Gateway routing (Lesson 4's Concept 3, L7 content-based routing, referenced not re-derived):** the supervisor's classification result is exactly the kind of request-content-dependent signal L7 routing exists to act on — directing a billing-intent request to the billing-specialist pool and a returns-intent request to a different pool.
-- **Response delivery (Lesson 10's Concept 3, Server-Sent Events, referenced not re-derived):** the response streams back to the client over SSE, so the customer sees tokens arrive progressively rather than waiting for the full three-call sequence (Step 2's 1.8-second floor) to finish silently.
+### What the sources say
+
+Sierra provides built-in redundancy across model providers for mission-critical tasks. It monitors latency, error rates and timeouts, and when a provider degrades, automated routing fails over to equivalent, healthier models. The November post lists channels: chat, voice, email, SMS, ChatGPT and the contact center *(source-confirmed)*. The sources give no more about serving.
+
+### A request path *(illustrative)*
 
 ```mermaid
 flowchart LR
-    C["Client\n(chat UI)"] --> GW["Gateway\n(L7 content-based routing)"]
-    GW --> SUP["Supervisor service"]
-    SUP --> POOL["Routed specialist pool\n(billing / returns / subscription)"]
-    POOL --> VAL["Validator service"]
-    VAL -->|approved| EXEC["Execute action"]
-    VAL -->|rejected| ESC["Escalate to human"]
-    EXEC --> SSE["SSE stream"]
-    SSE --> C
+    C["Client"] --> GW["Gateway"]
+    GW --> SUP["Supervisor"]
+    SUP --> POOL["Specialist pool"]
+    POOL --> VAL["Validator"]
+    VAL -->|"approved"| EXEC["Execute"]
+    VAL -->|"rejected"| ESC["Escalate"]
+    EXEC --> STREAM["Streamed reply"]
+    STREAM --> C
 ```
 
-**Delivering on Lesson 4's own forward reference — quoted exactly, then built out concretely.** Lesson 4's Concept 2 (CDN) states directly: *"capstone #12 (`case-studies/multi-agent-customer-support`) — its subject is a customer-support platform (grounded in the Sierra/Klarna case studies), which directly implies a large, distributed, external user base, exactly the kind of audience that makes a CDN worth having in front of its chat UI's static front-end assets (not its multi-agent orchestration logic). Worth being precise about the boundary: capstone #12's own write-up and sourcing is about multi-agent orchestration and hand-off design, not about its UI's asset delivery — this pointer connects to that capstone's necessary-but-unwritten-about front-end, not to its documented core lesson."* This is that front-end, made concrete, with its own numbers (deliberately different from Lesson 4's own 10,000-requests/day worked example, to extend rather than repeat it):
+Streaming the reply, as in [Lesson 10](../../lessons/lesson-10-production-scaling.md#concept-3-streaming-responses), hides some of the three-call latency from the customer, as long as no unvalidated action text is released early.
 
-Klarna's own disclosed 23-markets, 35-plus-languages footprint (Step 1) is exactly the "large, distributed, external user base" Lesson 4's own pointer names — a chat widget's JS bundle, CSS, and logo assets are the same bytes for a customer in one market as another, and serving them from a nearby edge node rather than a single origin is a pure win with no correctness question attached (unlike the orchestration logic above it, which genuinely can't be cached this way). Using Step 2's own 76,667 AI-handled conversations/day as the base rate, and an illustrative 6 static assets fetched per fresh chat-widget load (JS bundle, stylesheet, two logo/icon images, a web font, and a small config file):
+### Check before or after acting
 
-```
-daily_static_asset_requests = ai_handled_per_day × assets_per_load
-                             = 76,667 × 6
-                             ≈ 460,000 requests/day
+A synchronous check guarantees an unchecked action never executes and pays the latency on every action turn. An asynchronous audit removes the latency and leaves a window where a refund has already been sent. Sierra's observe and intercept modes are this choice made per topic: observe for low-risk topics and intercept for high-risk ones. For refunds, disputes and cancellations, which move money or commit a customer, the synchronous check is the safer default.
 
-illustrative cache_hit_ratio = 97%   (deliberately different from Lesson 4's own 95% example)
+### The chat widget
 
-hits  = 460,000 × 0.97 = 446,200 requests/day served from edge cache
-misses = 460,000 × 0.03 =  13,800 requests/day falling through to origin
+A chat widget's static files are the same for every customer and suit a content delivery network. With 6 files per widget load, 76,667 loads a day and a 97% hit ratio *(illustrative)*:
 
-origin_load_reduction = (460,000 - 13,800) / 460,000 = 97%
+```text
+76,667 × 6 = about 460,000 requests a day; 13,800 reach the origin (3%)
 ```
 
-Per Lesson 4's own "why model weights are a poor CDN fit" argument (referenced not re-derived), this is precisely where a CDN belongs in this capstone's architecture and precisely where it doesn't: the chat widget's static bytes are a textbook CDN fit, while the supervisor/specialist/validator calls above them are not static content at all and have no CDN-cacheable shape, confirming the boundary Lesson 4's own pointer was careful to draw.
+The model calls are not cacheable, and Klarna's 23 markets make an edge cache worthwhile for the static part only.
 
-```mermaid
-flowchart LR
-    W["Chat widget load\n(JS, CSS, logos, font, config)"] --> CDN["Edge CDN\n(pull cache)"]
-    CDN -->|97% hit| EDGE["Served from edge"]
-    CDN -->|3% miss| ORIGIN["Origin server"]
-```
+### Many tenants
 
-**Multi-tenant serving — Sierra as a platform serving many customers like Klarna, not just Klarna.** Per Lesson 8's own F5 Concept (multi-tenant isolation, referenced not re-derived: the silo/pool/bridge models), a platform like Sierra necessarily serves many enterprise tenants from shared infrastructure — Klarna is one tenant among presumably many. Whether each tenant's context store (Step 3) and specialist/validator configuration is siloed, pooled, or bridged is exactly the question F5 already answers in general; this capstone only notes that the Step 3 context store's sensitivity (real billing and account data) makes it the layer where F5's stakes are highest.
+A platform serving many companies shares infrastructure among them. Lesson 8's silo, pool and bridge models decide how tenant data is separated, and the context store is where the stakes are highest.
 
-**Series-availability math, reused directly rather than re-derived.** Lesson 7's own Concept 1 worked example, confirmed there and in Checkpoint 7's own Question 1, computes exactly this capstone's own three-service chain: a supervisor, a specialist, and a validator, each independently 99.9% available, chained in series, combine to **99.7003%** available (≈26.3 hours/year downtime) — worse than a single 99.9% monolith, not better — unless each service is also made redundant (an active-active pair per service, 99.9999% each), which brings the chain to **≈99.9997%** available (≈1.6 minutes/year) at the cost of **six total replicas** instead of one. This document reuses that figure directly rather than recomputing it, per this repo's own standing discipline of not inventing a second, conflicting number for the same system.
+### Trade-offs considered
 
-**Trade-offs considered:** Validating synchronously, in-line, before any action executes (this capstone's own design, Step 4) guarantees nothing unchecked ever reaches the customer, at the direct cost of Step 2's 1.8-second latency floor on every action-taking turn. An async alternative — let the specialist's action execute immediately, and validate (or audit) it afterward, rolling back if the validator later disagrees — would remove that latency floor entirely, at the cost of a real window during which an unchecked action has already taken effect (a refund already sent, a subscription already cancelled) before any check ran at all; for a reversible, low-stakes action this trade might be worth taking, but for anything resembling Klarna's own named categories (refunds, disputes, cancellations — all involve real money or a real commitment), the synchronous design's latency cost is the one this capstone treats as worth paying, consistent with this capstone's teaching point of preventing a bad action from reaching the customer, not catching it afterward.
+Validating in line prevents unchecked actions and costs latency. Failover across providers keeps the agent running and needs equivalent models, whose prompts differ by family, as Sierra's December post notes.
 
 ---
 
-## Step 6: Evaluation, Monitoring, and Iteration
+## Step 6: Evaluation, Monitoring and Iteration
 
-**This capstone's central teaching point is validator/guardrail agents as a distinct role, so one bad tool call doesn't reach the customer unchecked — and the numbers below are this document's own worked illustration of exactly why that role earns its cost. Every rate below (bad-action rate, catch rate, per-call token counts) is illustrative, invented for this calculation; only the ≈30,667-actions/day anchor is derived from Klarna's own disclosed scale (Step 2), not from any disclosed Sierra/Klarna error or catch-rate figure, because none exists in the sources available to this document.**
+### The economics of a validator, with false alarms counted
 
-**Sizing the daily validated-action volume.** Not every one of Step 2's 76,667 daily AI-handled conversations involves a state-changing action a validator needs to check — a pure informational question ("when is my next payment due?") has nothing to validate. Taking an illustrative 40% of conversations as involving at least one proposed action (refund, cancellation, subscription change):
+All rates below are assumptions *(illustrative)*. Take 76,667 conversations a day with 40% proposing an action: 30,667 actions. A 3% bad-action rate and a 90% catch rate:
 
-```
-validated_actions_per_day = 76,667 × 0.40 = 30,666.8 ≈ 30,667 actions/day
-```
-
-**The catch-rate calculation.**
-
-```
-illustrative_bad_action_rate = 0.03     (3% of proposed actions are wrong or policy-violating)
-illustrative_validator_catch_rate = 0.90 (validator correctly blocks 90% of actually-bad actions)
-
-bad_actions_if_unchecked = 30,667 × 0.03 = 920.01 ≈ 920 bad actions/day
-
-caught_by_validator      = 920 × 0.90 = 828 bad actions/day blocked before reaching the customer
-residual_reaching_customer = 920 × (1 - 0.90) = 92 bad actions/day
-
-reduction_ratio = 920 / 92 = 10x
+```text
+bad actions = 30,667 × 0.03 = 920         caught = 828        reach the customer = 92
+validator compute = 30,667 × $0.0012 = $36.80 a day   ($3 / $15 per million tokens; 300 in, 20 out)
 ```
 
-A 90% catch rate turns 920 potential bad actions a day into 92 that actually reach the customer unchecked — a 10x reduction, at the real cost of the validator's compute.
+The validator's compute is tiny, and the old way to present it would stop there at 112 times the benefit, with a bad action worth \$5. That leaves out false alarms. If the validator wrongly blocks 2% of the 29,747 good actions, that is 595 escalations a day. At an assumed \$4 of human handling each:
 
-**The cost side — using the same $3/1M-input, $15/1M-output illustrative pricing anchor Lessons 7 and 8 already establish, for direct comparability rather than a new assumption:**
-
-```
-cost_per_validation_call = (300 / 1,000,000) × $3   +   (20 / 1,000,000) × $15
-                          = $0.0009 + $0.0003
-                          = $0.0012
-
-total_validator_cost_per_day = 30,667 × $0.0012 = $36.80/day
-
-cost_per_bad_action_actually_prevented = $36.80 / 828 ≈ $0.044   (about 4.4 cents)
+```text
+benefit            = 828 × $5       = $4,140
+validator compute  =                = $37
+false escalations  = 595 × $4       = $2,380
+net                = 4,140 − 37 − 2,380 = $1,723 a day, a ratio of 1.7, not 112
+precision of blocks = 828 ÷ (828 + 595) = 58%
 ```
 
-**Why this number matters, even granting every assumption above is wrong by a wide margin.** $0.044 to catch one bad action before it reaches a customer is cheap against almost any plausible cost of the alternative — even a deliberately conservative illustrative estimate of $5 as the average cost of one bad action reaching a customer unchecked (a wrong refund amount, the support time to find and reverse it, the dent to the satisfaction score Step 1 cares about) puts the daily numbers at:
+Whether the validator pays depends on the false-positive rate and the cost of an escalation far more than on its compute. At a 1% false-positive rate the escalation cost halves, to about \$1,190. And if a bad action is worth \$2 instead of \$5, the same 2% rate turns the net negative: 1,656 − 37 − 2,380 = −761 a day.
 
-```
-cost_of_bad_actions_prevented = 828 × $5 = $4,140/day
-validator_cost                = $36.80/day
+### Failure modes
 
-net_benefit_ratio = $4,140 / $36.80 ≈ 112x
-```
+- A false negative: a bad action approved. These are the 92 a day above.
+- A false positive: a good action blocked, which lowers the resolution rate and adds human work.
+- Correlated blind spots, if the specialist and the validator are the same model family. Sierra says different supervisors use different LLMs, which helps. A policy citation in each verdict gives a partial check.
+- Quality decay after the first month. Klarna's later statements are an example of a cost-focused metric hiding a quality loss.
 
-This is this document's own illustrative argument, not a sourced one, for the same reason capstone #13's own compounding-error math is presented as "not deriving the real figure, only showing why a number in this rough range is unsurprising" — the point isn't that $0.044 or 112x are real numbers Sierra or Klarna would report, it's that the validator's cost is small enough, relative to almost any non-trivial estimate of what an uncaught bad action costs, that the real design question isn't "is a validator worth it" but "how high can the catch rate realistically go, and what happens when it's wrong."
+### Monitoring
 
-**Failure modes — the validator can be wrong in two directions, not just one** (shown in the diagram below):
-- **False negative** (the validator approves an action that was actually bad) — the failure this capstone's architecture is centrally worried about, exactly the residual 92/day above, the cases this whole architecture exists to shrink.
-- **False positive** (the validator blocks an action that was actually fine) — the opposite, quieter failure: it doesn't let anything wrong through, but directly hurts the resolution rate Step 1 also cares about, by forcing an unnecessary escalation for a correct action.
-- **The tuning tension:** raising recall on the bad-action class (catching more) tends to also lower precision on the good-action class (more false positives) — the same precision/recall trade-off capstone #5/#11's own AUPRC discussion already names in a different setting (referenced, not re-derived), applied here to validation decisions instead of content-moderation labels.
+- Resolution and escalation separately, since a rising escalation rate can mean the validator is catching real problems or that specialists are getting worse.
+- The validator's catch rate, estimated by human audit of approved actions, chosen from risky strata and not at random.
+- Error rate per domain and per specialist.
+- Repeat inquiries, the nearest thing to Klarna's quality measure. Klarna says it fell 25%.
+- Post-conversation review that pairs fast, high-recall detection with slower, high-precision reasoning, as Sierra describes.
 
-```mermaid
-flowchart LR
-    ACT["Proposed action\n30,667/day"] --> VAL["Validator check"]
-    VAL -->|"false negative - approves a bad action"| FN["Residual bad action\nreaches customer\n~92/day"]
-    VAL -->|"correct call"| OK["Executes or escalates correctly"]
-    VAL -->|"false positive - blocks a good action"| FP["Unnecessary escalation\n(hurts resolution rate)"]
-```
+### The feedback loop
 
-**A correlated-failure risk worth naming explicitly, as this document's own reasoned inference rather than a sourced claim about Sierra specifically.** If the specialist and the validator are drawn from the same underlying model family (plausible, given Sierra's own confirmed "15+ frontier, open-weight, and proprietary models" pool, which could assign the same family to both roles for a given task), a shared training-data blind spot could make the validator *miss exactly the class of mistake the specialist is most prone to* — the same risk Lesson 9's own cited LLM-as-judge finding (Zheng et al.: a judge can favor its own family's style) already confirms in a sibling setting, extended here as an inference, not a confirmed Sierra-specific fact. Step 4's architecture already provides a partial mitigation: the validator's verdict schema requires a `policy_citation`, forcing part of its check to be grounded in an explicit, checkable policy reference rather than a free-floating judgment call a shared blind spot could corrupt silently — a real, if partial, defense.
+Rejected and escalated cases go back to the policy knowledge base, which may have a gap, and to the specialist's prompt, which may need correcting.
 
-**The feedback loop.** Every escalated or validator-rejected case is input a real deployment would route back into:
-- Step 3's policy knowledge base (a recurring rejection reason that turns out to be a policy-interpretation gap, not an actual error)
-- Step 4's specialist prompting (a specialist that keeps proposing an action the validator keeps correctly blocking signals that specialist's training or prompt needs correcting, not that the validator is overly strict)
+### What breaks first at 10×
 
-the same "route real production failures back into the thing that needs fixing" shape capstones #9 and #13's own Step 6 feedback loops already follow, applied here to validator rejections instead of a retrieval eval set or a stalled coding-agent session.
+| Quantity | At 10× | Reason |
+|---|---|---|
+| Concurrent sessions | Up to 1,060 | Arrival rate times time |
+| Validator compute | \$368 a day | One call per action |
+| False escalations | 5,950 a day at the same rate | Scale with actions |
+| Audit work | 10 times the sample for the same coverage | Scales with volume |
 
-```mermaid
-flowchart LR
-    REJ["Escalated / validator-rejected case"] --> KB["Step 3 policy\nknowledge base"]
-    REJ --> PROMPT["Step 4 specialist\nprompting/training"]
-```
+### Trade-offs considered
 
-**What to monitor in production:**
-- **Resolution rate and escalation rate** (Step 1), tracked separately — a *rising* escalation rate could mean "the validator is catching more real problems" (good) or "the specialists are getting worse" (bad), and the two need to be told apart, not blended into one number.
-- **Validator catch-rate itself**, which (per the correlated-failure risk above) can only be estimated via targeted human audit of validator-approved actions — the same "stratified, not random" auditing discipline capstone #5/#11's own confirmed methodology already establishes for a structurally similar rare-event detection problem (referenced as a real precedent, not re-derived).
-- **Per-specialist-domain error rate** — a rising error rate isolated to one specialist (billing, say) points at a narrower fix than a platform-wide one.
-
-**Trade-offs considered:** Auto-executing every validator-approved action with no further human spot-check scales cleanly to Klarna's own disclosed volume, but means a validator blind spot (the correlated-failure risk above) could run unnoticed indefinitely — there's no independent check on the independent check. Sampling a fraction of validator-approved actions for human audit (mirroring, not re-deriving, capstone #5/#11's own stratified-auditing precedent) catches that blind spot, but costs real, ongoing human review time that scales with platform volume, the same recurring-cost-vs.-one-time-investment trade Lesson 9's own prompt-versioning Concept already names in a different setting. Neither extreme is correct in general — how much audit sampling is worth paying for depends on how costly a residual bad action actually is in a given domain (Step 6's own illustrative $5-per-bad-action floor would justify far more audit spend than a domain where a bad action is nearly free to reverse), which is a business decision this capstone's own architecture doesn't make for it, the same honest limitation capstone #13's own Step 6 names for its auto-merge-vs-human-review question.
+Auto-executing approved actions scales and lets a validator blind spot run unnoticed. Auditing a sample costs recurring review time and finds it. How much audit to buy depends on what a residual bad action costs in the domain.
 
 ---
 
-## Source(s) and Further Reading
+## Sources and Further Reading
 
-- Sierra AI, *"Constellation of models: the architecture powering Sierra's agents"* (sierra.ai/blog/constellation-of-models, Dec. 3, 2025) — **primary** (Sierra's own blog), but confirmed by direct fetch to be a non-technical, marketing-level overview: no named models or providers, no latency/accuracy/uptime figures, no architecture diagram. Source of the "15+ frontier, open-weight, and proprietary models," "task-specific evaluations," and "supervisors... enforce guardrails, policies, and quality checks" claims used in Step 4.
-- Atlan, *"What Is Sierra? The AI Agent Platform for Customer Service"* (atlan.com) — **secondary**; confirmed by direct fetch. Flagged throughout for Atlan's own commercial interest in portraying vendor-built context layers (like Sierra's Agent Data Platform) as risky, since Atlan sells a competing product. Source of the Agent Data Platform/Context Engine framing used in Step 3.
-- Third-party technical coverage describing a "planner/executor/validator" characterization of Sierra's "Constellation architecture" — **secondary**; this vocabulary is commonly associated with a Cybernews review, but a direct fetch of the live Cybernews page returned HTTP 403 on repeated attempts, and an independent search found the exact terminology more directly in other third-party write-ups (e.g. an Oboe interview-prep study guide, a separate blog's "$500 refund" example) than in any verifiable Cybernews text — so this document could not confirm Cybernews specifically as the originating source, and names the attribution only as "third-party coverage" rather than standing behind an unconfirmed specific source, per Step 4's own honest framing of that limitation.
-- RuntimeWire's coverage of Sierra's Context Engine announcement (tied to Sierra's "Horizon" platform) — **secondary**; confirmed by direct fetch to discuss Context Engine and Horizon only — it does not mention "Agent Data Platform" by name, so that specific framing used in Step 3 is credited to Atlan above, not to RuntimeWire. Used in Step 3 for the cross-channel/cross-system unification framing, itself substantially built on Sierra's own announcement text.
-- OpenAI's customer story on Klarna (`openai.com/customer-stories/klarna`) — **could not be fetched directly** (HTTP 403 on two URL variants; the Wayback Machine was unreachable in this environment). Every Klarna figure in this document (2.3M conversations/month, two-thirds of chat volume, ~700 FTE-equivalent, 11-to-2-minute resolution time, 23 markets, 35+ languages, ~$40M 2024 profit improvement, satisfaction parity with human agents) is corroborated across independent press coverage of the same disclosed announcement — CX Today, Silicon Canals, and VKTR — all of which attribute every figure to Klarna's own statements, not to an independent audit.
-- Lesson 1 (`lessons/lesson-1-ai-fundamentals-refresher.md`), Concepts D2 (control-flow patterns — plan-and-execute, reflection), D5 (multi-agent orchestration), and E2 (long-term memory) — referenced throughout rather than re-derived; this capstone is D5's own named example.
-- Lesson 3 (`lessons/lesson-3-scalability-and-availability.md`), Concept 2 (CAP theorem/consistency, applied to per-customer context freshness in Step 3) and Concept 3 (availability math, reused directly in Step 5).
-- Lesson 4 (`lessons/lesson-4-network-and-delivery.md`), Concept 2 (CDN) — the exact forward reference this document's Step 5 quotes and resolves — and Concept 3 (L7 load balancing, applied to supervisor-routed traffic).
-- Lesson 5 (`lessons/lesson-5-data-layer.md`), Concept 2 — the KV/wide-column storage shape underlying the per-customer context record in Step 3, referenced not re-derived.
-- Lesson 7 (`lessons/lesson-7-application-architecture-and-security.md`), Concept 1 (blast radius, SRP, and the series-availability worked example this document's Step 5 reuses directly, confirmed also in Checkpoint 7's own Question 1) and Concept 4 (the $3/1M-input, $15/1M-output illustrative pricing anchor reused in Step 6).
-- Lesson 8 (`lessons/lesson-8-safety-and-isolation.md`), Concept 4 (guardrails and output validation — the mechanism-level cousin of this capstone's validator-agent Sidebar, deliberately not duplicated) and Concept 5 (multi-tenant isolation, referenced in Step 5).
-- Lesson 9 (`lessons/lesson-9-evaluation-and-observability.md`), Concept 2 — the LLM-as-judge definition and Zheng et al.'s own documented judge-model biases, the basis for this document's own reasoned inference about correlated specialist/validator failure risk in Step 6.
-- Lesson 10 (`lessons/lesson-10-production-scaling.md`), Concept 3 — the Server-Sent Events streaming format this capstone's Step 5 serving architecture is built on top of, referenced not re-derived.
-- `case-studies/rag-contextual-retrieval/README.md` (capstone #9) and `case-studies/autonomous-coding-agent/README.md` (capstone #13) — structural precedent for this document's own feedback-loop framing (Step 6) and its honest "this number is illustrative, flagged as such" discipline throughout.
-- `case-studies/harmful-content-detection/README.md` (capstones #5/#11) — precedent for this document's stratified-auditing reference in Step 6 and its repeated, not single-disclaimer, flagging of sourced-vs-extrapolated content throughout.
-- `appendix/glossary.md` — new entries added for **Little's Law** and **validator/guardrail agent (and validator catch-rate)**; both are defined in full on first use above rather than assumed familiar.
+- Sierra, "From LLMs to enterprise-grade agents," October 2, 2025. The source for the supervisors, input filtering, output interception and the error philosophy.
+- Sierra, "Sierra Agent OS 2.0: from answers to memory and action," November 5, 2025. The source for the Agent Data Platform and the channels.
+- Sierra, "Constellation of models: the architecture powering Sierra's agents," December 3, 2025. The source for the 15 or more models, task-based selection and failover.
+- Klarna, "Klarna AI assistant handles two-thirds of customer service chats in its first month," February 27, 2024. The source for every Klarna figure marked source-confirmed.
+- Press coverage of Klarna's CEO interviews with Bloomberg in May 2025 and Reuters in September 2025 (secondary, reported). The source for the later change of course.
+- [Lesson 1](../../lessons/lesson-1-ai-fundamentals-refresher.md), [Lesson 7](../../lessons/lesson-7-application-architecture-and-security.md), [Lesson 8](../../lessons/lesson-8-safety-and-isolation.md) and [Lesson 9](../../lessons/lesson-9-evaluation-and-observability.md): orchestration, availability, guardrails and judging.
+- [Capstone #5 and #11](../harmful-content-detection/README.md): stratified audits and a cascade of checks.
+- [Glossary](../../appendix/glossary.md): Little's law, validator and guardrail agent.
+
+Labels: *(source-confirmed)* is in the named primary source. *(illustrative)* is a planning assumption or design of this document.
