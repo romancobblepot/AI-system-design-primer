@@ -1,329 +1,331 @@
 # Capstone #8: Personalized Feed Ranking — Netflix's Row Ranking
 
-**Source(s):** Primary — Amatriain and Basilico (Netflix Personalization Science and Engineering), *"Netflix Recommendations: Beyond the 5 Stars, Part 1,"* Netflix Tech Blog, posted Friday, April 6, 2012; and *"Netflix Recommendations: Beyond the 5 Stars, Part 2,"* Netflix Tech Blog, posted Wednesday, June 20, 2012.
+## At a glance
 
-**Confidence:** Moderate-to-strong on text, with one honest limitation on scope and one explicit clarification of which error metric the posts actually name, both stated up front rather than papered over.
+| Topic | Summary |
+|---|---|
+| Sources | Amatriain and Basilico, "Netflix Recommendations: Beyond the 5 Stars," Part 1 (April 6, 2012) and Part 2 (June 20, 2012), Netflix Tech Blog. Two company blog posts, not papers. |
+| Problem | Order the titles in each row of a member's homepage so that the titles the member is most likely to play and enjoy come first, in real time. |
+| Core idea | Rating prediction was a proxy. The ranking function combines predicted rating with popularity and other features, and is learned from historical positive and negative examples. |
+| Objective | Maximize member satisfaction and month-to-month retention, which the posts say correlates well with consumption of video *(source-confirmed)*. |
+| Scale in 2012 | More than 23 million subscribers in 47 countries; 2 billion hours streamed in the last quarter of 2011; 2 million queue adds and 4 million ratings a day; more than 5 billion ratings; 75% of what people watch comes from some sort of recommendation *(source-confirmed)*. |
+| Evidence | The posts give the Netflix Prize error figures, one function form, and a bar chart without numbers or a stated metric. They report no ranking results as numbers. |
+| Not published | Latency, request rate, catalog size, weights, the features that drove the large gain, and any serving architecture. Step 5 is this document's design. |
+| First to break | Not compute. Scoring a row is cheap. The posts' own limits are data and evaluation: offline metrics only indicate online results, and tests have thousands of members. |
+| Easy-to-miss traps | A model with a better RMSE can order titles worse. The bar chart does not say what it measures. The accepted prize ensemble was not what shipped. A play is not a person, since a household shares an account. |
+| Practice PDFs | [Study edition](../../capstone-study-and-mock/netflix-feed-ranking/capstone8_netflix_feed_ranking_study.pdf) · [Mock interview](../../capstone-study-and-mock/netflix-feed-ranking/capstone8_netflix_feed_ranking_mock.pdf) |
 
-- **On access:** the original URLs (`techblog.netflix.com/2012/04/netflix-recommendations-beyond-5-stars.html` and the `/2012/06/` companion) no longer resolve live — Netflix's tech blog has moved at least twice since 2012, first to Blogspot-hosted `techblog.netflix.com`, then to Medium at `netflixtechblog.com`. The current `netflixtechblog.com` URLs for this same two-part post (`.../netflix-recommendations-beyond-the-5-stars-part-1-55838468f429` and `-part-2-d9b96aa399f5`) exist but returned HTTP 403 Forbidden to automated fetches during research for this document. Per this repo's standing rule to try the Wayback Machine before concluding a source is unreachable, both original Blogspot URLs were checked against `archive.org`'s availability API, which returned live, 200-status snapshots for both (`web.archive.org/web/20170430215314/.../2012/04/...` for Part 1, `web.archive.org/web/20170430194230/.../2012/06/...` for Part 2). Both snapshots were retrieved directly via `curl`, stripped of markup, and read in full — this document is written from that raw, character-checked text, not from secondhand summaries or the KDnuggets/other reprints that also exist. Every quoted sentence below was checked against that extracted text before being placed in quotation marks; a small number of sentences in the raw HTML contained stray whitespace artifacts from embedded hyperlinks (e.g. a space inserted before a comma where linked anchor text ended) — those specific sentences are paraphrased here instead of quoted, precisely because this document can't certify their exact character-level spacing, even though their wording is otherwise legible and unambiguous.
-- **On the two embedded charts:** Part 2 includes two images — a bar chart titled "Ranking improvement over baseline" and a scatter diagram illustrating a two-dimensional popularity/rating ranking space. Both images still load from their original Blogspot-hosted URLs via the same Wayback Machine snapshot and were downloaded and viewed directly for this document (not described secondhand). The bar chart has no alt-text or caption with exact numbers, so the percentages reported in Step 4 below are this document's own **visual estimate** of where each bar's edge falls against the chart's own 0–250% axis gridlines — reported as approximate, not as Netflix's own stated figures (and more directly verified than a chain of secondary coverage of the same chart, e.g. an Engadget summary, would be).
-- **On scope and genre:** this source is a **2012 company blog post, not a peer-reviewed paper or a systems paper** — it is strategic/product-framing writing aimed at a general technical audience, not an engineering-internals document like capstone #7's arXiv paper. It confirms the *problem framing* (ranking vs. rating-prediction), the *general shape* of the ranking function, the *data sources* that feed it, and the *evaluation discipline* (offline metrics, A/B testing) in real, specific, quotable detail — but it gives **no serving-infrastructure detail** at all: no latency numbers, no QPS figures, no caching-tier description, no model-versioning/rollout mechanics the way capstone #7's Uber paper or capstone #3's YouTube paper do. Step 5 (serving architecture) is flagged accordingly as this document's own constructed design, built on the post's own confirmed "scoring, sorting, and filtering" framing but not itself a Netflix-confirmed infrastructure diagram.
-- **A clarification on terminology, stated explicitly:** this capstone's teaching point is sometimes paraphrased as "a system can nail **MAE** on ratings and still produce a bad row ordering." Having read both posts in full, **the metric the posts themselves actually name, repeatedly and specifically, is RMSE (root mean squared error), not MAE (mean absolute error)** — the Netflix Prize's own target metric, confirmed directly below in Step 1 (RMSE of 0.9525 → 0.8572). Both MAE and RMSE are defined in full below, per this repo's depth bar, but this document does not claim the posts themselves say "MAE" anywhere — that word is a common compressed paraphrase of "rating-prediction error metric," not a term either post uses. This distinction is flagged here rather than silently "corrected" by just swapping the word in, so the gap between that shorthand and the source's own vocabulary is visible rather than hidden.
+Evidence labels used below: *(source-confirmed)* means the figure or claim is in one of the two posts. *(illustrative)* means it is this document's planning assumption or design. The posts' original addresses no longer resolve, so both were read from archived copies.
 
-**Scope note:** This capstone covers what the two posts themselves cover: the **ranking** problem specifically — producing the ordering of titles within a row, and, more broadly, the decision of what to optimize for in presenting a personalized set of titles to a member. It does **not** cover the Netflix Prize's own matrix-factorization/RBM rating-prediction models in architectural depth (SVD and RBM are named only as historical context for *why* the company moved past pure rating-prediction); it does not cover which rows get chosen or how many rows appear (the posts mention "genre" row selection and the Top10 row only as context for why ranking matters, not as a worked algorithm); and it does not cover recommendation diversity, freshness, or explanation-generation as their own systems, even though the posts name all three as factors — this document treats them as named factors in Step 1's objective, not as separately designed subsystems.
+### Concepts this case study builds on
+
+| Concept | Where it is taught | One-line recap |
+|---|---|---|
+| Two-stage retrieval then ranking | [Capstone #3](../video-recommendation/README.md) | Narrow a corpus cheaply, then rank a short list with richer features. |
+| Pairwise learning to rank, NDCG | [Capstone #4](../airbnb-search-ranking/README.md) | A loss over pairs, weighted by the change in NDCG. |
+| Offline evaluation | [Lesson 9, Concept 2](../../lessons/lesson-9-evaluation-and-observability.md#concept-2-offline-evaluation--golden-datasets-llm-as-judge-regression-suites) | Gate changes on a fixed measurement and know what it cannot show. |
+| Ranking function | [Glossary](../../appendix/glossary.md) | A score built from several signals, not equal to any one. |
 
 ---
 
 ## Step 1: Clarify Requirements & Frame the ML/AI Objective
 
-**Where this problem starts: the Netflix Prize's own framing, and why it was always a proxy.** In 2006 Netflix launched a public competition — $1 million to whoever improved the accuracy of its existing rating-prediction system, Cinematch, by 10%. Because "improve recommendations" isn't directly measurable, Netflix needed a narrower, quantifiable proxy: **root mean squared error (RMSE)** of predicted star ratings — "the race was on to beat our RMSE of 0.9525 with the finish line of reducing it to 0.8572 or less" **(Part 1)**.
+### The Prize and its proxy
 
-The RMSE progression the competition actually produced, confirmed directly **(Part 1)**:
-- **Baseline to beat:** RMSE 0.9525, target 0.8572 or less.
-- **SVD (Matrix Factorization) alone:** 0.8914 RMSE.
-- **RBM (Restricted Boltzmann Machines) alone:** 0.8990 RMSE — "competitive but slightly worse" than SVD.
-- **Linear blend of SVD + RBM:** 0.88 RMSE — this combined pair is what Netflix actually put into production.
-- **$1M Grand Prize ensemble** ("blending hundreds of predictive models"): evaluated but **never shipped** — "the additional accuracy gains that we measured did not seem to justify the engineering effort needed to bring them into a production environment" **(Part 1)**, an explicit instance of an accuracy win not justifying its engineering cost.
+In 2006 Netflix announced a competition: \$1 million to whoever improved the accuracy of its existing system, Cinematch, by 10%. Improving recommendations is hard to measure, so the posts say Netflix had to find a proxy question that was easier to evaluate: the root mean squared error (RMSE) of the predicted rating. The posts give the figures *(source-confirmed)*:
 
-```mermaid
-flowchart LR
-    BASE["Cinematch baseline\nRMSE 0.9525"] --> TARGET["Prize target\nRMSE <= 0.8572"]
-    TARGET --> SVD["SVD alone\n0.8914 RMSE"]
-    TARGET --> RBM["RBM alone\n0.8990 RMSE"]
-    SVD --> BLEND["Linear blend SVD+RBM\n0.88 RMSE"]
-    RBM --> BLEND
-    BLEND --> PROD["Shipped to production"]
-    BLEND --> GRAND["Grand Prize ensemble\nhundreds of models blended"]
-    GRAND -.->|"accuracy gain didn't justify\nengineering effort"| NOSHIP["Never shipped"]
-```
+| Model | RMSE | Improvement over 0.9525 |
+|---|---|---|
+| Cinematch, the baseline | 0.9525 | none |
+| Prize target | 0.8572 or less | 10% |
+| SVD, matrix factorization, alone | 0.8914 | 6.4% |
+| RBM, restricted Boltzmann machines, alone | 0.8990 | 5.6% |
+| A linear blend of the two | 0.88 | 7.6% |
 
-**The actual objective — stated directly, and it is not "predict the rating accurately."** Both posts are explicit that rating-prediction accuracy was only ever one ingredient, not the goal. Part 1 states it plainly: "accurate prediction of a movie's rating is just one of the many components of an effective recommendation system that optimizes our members enjoyment. We also need to take into account factors such as context, title popularity, interest, evidence, novelty, diversity, and freshness" **(Part 1)**.
+The first Progress Prize went a year in to the Korbell team with an 8.43% improvement, after more than 2,000 hours of work and a combination of 107 algorithms. The percentages in the table are arithmetic on the posts' figures.
 
-The posts name the real objective in two complementary ways:
-- **Operationally, for the ranking system specifically:** "Our business objective is to maximize member satisfaction and month-to-month subscription retention, which correlates well with maximizing consumption of video content. We therefore optimize our algorithms to give the highest scores to titles that a member is most likely to play and enjoy" **(Part 1)**.
-- **As the post's own summary of how the company's thinking evolved past the Prize:** "The Netflix Prize abstracted the recommendation problem to a proxy question of predicting ratings. But member ratings are only one of the many data sources we have and rating predictions are only part of our solution. Over time we have reformulated the recommendation problem to the question of optimizing the probability a member chooses to watch a title and enjoys it enough to come back to the service" **(Part 2)**.
+### What shipped
 
-**This is the capstone's central teaching point, in the source's own words**: the objective is not "minimize the error of a 5-star rating prediction," it's "maximize the chance a member plays a title and is satisfied enough to keep subscribing" — a genuinely different optimization target that a model could, in principle, nail on the first metric while failing badly on the second.
+Netflix put the two underlying algorithms, SVD and RBM, into production, where the post says they are still used as part of the recommendation engine. They first had to overcome two limits: the code was built to handle 100 million ratings, against the more than 5 billion Netflix has, and it was not built to adapt as members added more ratings. The \$1 million Grand Prize ensemble, which blended hundreds of models, was evaluated offline and not shipped, because the additional accuracy gains did not seem to justify the engineering effort. The post adds that Netflix's focus had by then shifted.
 
-**What counts as ground truth / feedback signal.** Unlike the Netflix Prize's explicit 5-star ratings (a label a member has to deliberately provide), the broader ranking objective's real feedback signal is **behavioral**: what a member actually plays, how much of it they watch, whether they return to the service. The posts describe several concrete behavioral data sources that stand in for this (Step 3 covers them in full): stream plays, queue adds, search terms, and "presentations" — logged impressions plus how a member interacted with them (scrolls, mouse-overs, clicks, time spent) **(Part 2)**. Explicit ratings remain one input (`r(u,v)` in Step 4's formula) but aren't the optimization target — just one feature feeding a ranking function aimed at engagement and retention.
+### Why the objective moved
 
-**Why rating prediction alone produces a bad ranking — the post's own stated failure mode.** Part 2 names the specific risk directly: "Using predicted ratings on their own as a ranking function can lead to items that are too niche or unfamiliar being recommended, and can exclude items that the member would want to watch even though they may not rate them highly" **(Part 2)**. A ranking system that sorts purely by predicted rating optimizes for the wrong proxy, in exactly the sense Step 1's framing above sets up — Step 4 below works this out numerically, with a documentary/blockbuster example showing a lower-rated title outranking a higher-rated one.
+The posts describe what changed with streaming (launched 2007):
 
-**Explicitly out of scope:**
-- The Netflix Prize-era rating-prediction models (SVD/RBM) themselves, treated here as one input signal (`r(u,v)`) to the ranking function rather than the system this capstone is about.
-- Row/genre *selection* (which rows appear on a given member's homepage, and in what order) — the posts describe this as a separate layer of personalization above ranking, not the ranking problem itself.
-- The recommendation-explanation and diversity/freshness mechanisms the posts name as factors but don't describe as separate worked systems.
+- For DVDs, selection was distant in time from viewing, people chose carefully because an exchange took more than a day, and there was no feedback during viewing.
+- For streaming, members want something great to watch right now, can sample several videos, can watch several in a session, and the service can observe whether a video was watched fully or partly.
 
-**Trade-offs considered:** Framing the objective as "maximize engagement/retention" rather than "minimize rating-prediction error" is strictly harder to optimize directly — engagement and retention are noisier, slower-arriving, more confounded signals than a clean numeric rating label, and (per Step 6) can only really be measured with confidence through live A/B testing rather than a clean offline metric. But optimizing the easier, cleaner proxy (RMSE on ratings) risks exactly the failure mode named above: a model can get RMSE arbitrarily close to its theoretical floor and still recommend titles members don't actually want to watch tonight. Retaining predicted rating as one input to a broader ranking function (rather than discarding the Netflix Prize-era work entirely) preserves the real investment already made in that signal — SVD and RBM "are still used as part of our recommendation engine" **(Part 1)**, years after the Prize ended — while not letting that signal alone drive the final ordering.
+Predicting a rating accurately is just one of many components. The posts also list context, title popularity, interest, evidence, novelty, diversity and freshness. Part 2 states the reformulated question: optimize the probability that a member chooses to watch a title and enjoys it enough to come back to the service.
+
+### The business objective
+
+The goal of ranking is the best possible ordering of items for a member, within a context, in real time. The business objective is to maximize member satisfaction and month-to-month retention, which correlates well with maximizing consumption of video. The algorithms therefore give the highest scores to titles a member is most likely to play and enjoy. The posts say 75% of what people watch is from some sort of recommendation, so ordering carries real weight.
+
+### What a row is
+
+Part 1 says each genre row has three layers of personalization: the choice of genre, the titles selected within it, and their ranking. Netflix measured an increase in retention by placing the most tailored rows higher on the page. The posts also say that Top 10 is meant for a household, with different tastes in it, so that Netflix optimizes for diversity as well as accuracy.
+
+### Ground truth
+
+The signal is behavioral: plays and how much was watched, queue adds, searches, and the presentations a member saw and how they interacted with them. A household can share an account, so one account's plays mix several people. Ratings are one input among several.
+
+### Why predicted rating alone ranks badly
+
+Part 2 says using predicted ratings on their own can lead to items that are too niche or unfamiliar being recommended, and can exclude items the member would want to watch even though they may not rate them highly.
+
+### Out of scope
+
+- The Prize-era rating models, treated as one input.
+- Row and genre selection, a layer above the ranking of titles within a row.
+- Explanations, diversity and freshness as separate systems. The posts name them without describing them.
+
+### Trade-offs considered
+
+Engagement and retention are noisier and slower than a rating, and only live tests measure them with confidence. A proxy such as RMSE is easy to optimize and can be improved without improving what members want to watch.
 
 ---
 
 ## Step 2: Back-of-Envelope Constraints
 
-**Confirmed scale, directly from Part 1 (as of its April 2012 publication date).** "Today, Netflix has more than 23 million subscribers in 47 countries. Those subscribers streamed 2 billion hours from hundreds of different devices in the last quarter of 2011. Every day they add 2 million movies and TV shows to the queue and generate 4 million ratings" **(Part 1)**. Separately, Part 1 notes the ratings corpus had outgrown the Prize-winning algorithms: "they were built to handle 100 million ratings, instead of the more than 5 billion that we have" **(Part 1)** — i.e., over 5 billion ratings on file as of 2012. Part 2 adds daily-volume figures for several other signal types: "we receive several million stream plays each day," "our members add millions of items to their queues each day" (consistent with Part 1's 2-million figure), and "our members directly enter millions of search terms in the Netflix service each day" **(Part 2)**.
+### What Part 1 states
 
-**A real, derived calculation: average ratings-ingestion rate.** Taking Part 1's confirmed 4 million ratings/day figure:
+More than 23 million subscribers in 47 countries. Those subscribers streamed 2 billion hours in the last quarter of 2011. Every day they add 2 million movies and TV shows to the queue and generate 4 million ratings. Netflix has more than 5 billion ratings. Part 2 adds that it receives several million stream plays each day and millions of search terms *(source-confirmed)*.
 
-```
-ratings_per_second = 4,000,000 ratings/day ÷ 86,400 seconds/day
-                   ≈ 46.3 ratings/sec, averaged across the day
-```
+### Derived rates
 
-This is a modest write rate by modern standards, but it's a real, source-derived number (not illustrative) — unlike capstones #7 and #3, this post gives exact daily totals, so no illustrative scale anchor is needed here.
-
-**A second real, derived calculation: average daily viewing hours per subscriber.** Taking Part 1's confirmed "2 billion hours" streamed in "the last quarter of 2011" (a quarter = roughly 92 days, Oct–Dec) against the "more than 23 million subscribers" figure (both confirmed, though not necessarily measured at exactly the same moment — the subscriber count is as of the April 2012 post date, the streaming total is for the prior quarter, a looseness this document flags rather than treats as exact):
-
-```
-daily_streamed_hours = 2,000,000,000 hours ÷ 92 days
-                      ≈ 21,739,130 hours/day, platform-wide
-
-hours_per_subscriber_per_day ≈ 21,739,130 ÷ 23,000,000
-                              ≈ 0.95 hours/subscriber/day
-                              ≈ 57 minutes/subscriber/day, averaged across all subscribers
+```text
+ratings a second  = 4,000,000 ÷ 86,400 = about 46
+hours a day       = 2,000,000,000 ÷ 92 days = about 21.7 million
+hours per subscriber a day = 21.7 million ÷ 23 million = about 0.95, or 57 minutes
+ratings on file per subscriber = 5,000,000,000 ÷ 23,000,000 = about 217
 ```
 
-**~57 minutes of average daily viewing per subscriber** is this document's own derived figure from two separately-confirmed numbers — not one Netflix states directly — included as a concrete version of what Step 1's "maximize consumption" objective is actually trying to move: watched-hours, not a rating-prediction error metric.
+The subscriber count is from April 2012 and the viewing total is for the previous quarter, so the 57 minutes is approximate.
 
-**What the posts do not give a number for — flagged honestly, then filled illustratively.** Neither post states an exact title-catalog size, an exact count of rows shown per homepage, or an exact number of titles shown per row. The only directly relevant quantitative hint is Part 1's mention of selecting "what genres to show from the thousands possible" **(Part 1)** — confirming there are, at minimum, thousands of *possible* genre-based rows, though not how many actually render on one member's homepage. The figures below are this document's own illustrative construction, clearly kept separate from the confirmed figures above, in the same spirit as capstone #3's and #7's illustrative scale anchors:
+### A check between two figures
 
-```
-catalog_size (illustrative)        ≈ 10,000 titles
-rows_per_homepage (illustrative)   ≈ 40 rows      (a small slice of "thousands possible")
-titles_per_row (illustrative)      ≈ 75 titles    (most never scrolled to; a handful shown "above the fold")
+Part 2 says "several million" stream plays a day. Total viewing is 21.7 million hours a day:
 
-scores_computed_per_homepage_load (illustrative) = 40 rows × 75 titles/row
-                                                  = 3,000 ranking-function evaluations per homepage render
+```text
+21.7 million hours ÷ 3 million plays = 7.2 hours per play
+21.7 million hours ÷ 9 million plays = 2.4 hours per play
 ```
 
-Each of those 3,000 evaluations, per Step 4 below, is a cheap weighted combination of a handful of features (not a full neural-network forward pass) — which is why this scale is survivable in real time, the same way capstone #7's Uber model stays within its latency budget because most of its cost sits in cheap embedding-table lookups rather than dense compute.
+Even at nine million plays a day, the average play is 2.4 hours, longer than most films. Either a play means a session of several titles, which the posts say members do, or "several million" is loose. The figures should not be combined without knowing the definition of a play.
 
-**An illustrative homepage-load QPS estimate**, anchored to the confirmed 23-million-subscriber figure, assuming an illustrative 1.5 homepage loads/subscriber/day (not stated by either post):
+### What the posts do not give
 
-```
-daily_homepage_loads (illustrative) = 23,000,000 subscribers × 1.5 loads/day
-                                     ≈ 34,500,000 loads/day
+A catalog size, the number of rows on a homepage, or titles per row. Part 1 says genres are chosen "from the thousands possible". With assumed values *(illustrative)*:
 
-average_qps (illustrative) = 34,500,000 ÷ 86,400 seconds/day
-                            ≈ 399 requests/sec, averaged across the day
-
-peak_qps (illustrative, 4x peak-to-average ratio,
-          consistent with capstone #7's own illustrative ratio
-          for similarly evening/prime-time-concentrated demand)
-          ≈ 399 × 4 ≈ 1,596 requests/sec at peak
+```text
+40 rows × 75 titles = 3,000 scores per homepage
+23,000,000 subscribers × 1.5 homepage loads a day = 34.5 million loads
+34.5 million ÷ 86,400 = about 400 loads a second, about 1,600 at an assumed peak of 4
+1,600 × 3,000 = about 4.8 million scores a second at peak
 ```
 
-**Trade-offs considered:** Leaning on the post's own two exact daily-volume figures (4 million ratings/day, 2 billion hours/quarter) for the two real calculations above, rather than inventing illustrative anchors for everything, keeps this section's arithmetic honest about what's actually confirmed — but it does mean this capstone's QPS/scoring-load figures (catalog size, rows/homepage, titles/row, homepage-load rate) lean more heavily on illustrative construction than, say, capstone #1's Pinterest capstone, whose source paper states an exact "over 600 million visual searches per month" figure directly. Treating "thousands of possible genre rows" as a floor on catalog diversity rather than inventing a precise catalog-size figure from nothing keeps the illustrative rows_per_homepage/titles_per_row figures tethered to at least one real data point, at the cost of a wider plausible range than a fully paper-confirmed figure would have.
+Each score is a weighted sum of a few numbers, so the arithmetic is small. The load is in reading the signals: popularity for each title and the member's predicted rating for each title.
+
+### Trade-offs considered
+
+The two exact daily volumes in the posts make the rate figures reliable, and the homepage numbers are assumptions. Each is chosen to sit inside what the posts say and none is a measurement.
 
 ---
 
 ## Step 3: Data / Knowledge Pipeline
 
-**The confirmed, named data sources feeding ranking (Part 2's own list, "Data and Models" section).** Part 2 lays out, as a direct enumerated list, what feeds Netflix's recommendation models **(Part 2)**:
+### The data sources
 
-- **Ratings** — "several billion item ratings from members," receiving "millions of new ratings a day."
-- **Item popularity** — computed multiple ways: "over various time ranges, for instance hourly, daily, or weekly," and also by grouping "members by region or other similarity metrics."
-- **Stream plays** — "several million" per day, which "include context such as duration, time of day and device type."
-- **Queue adds** — "millions of items" per day.
-- **Catalog metadata** — "actors, director, genre, parental rating, and reviews."
-- **Presentations** — "what items we have recommended and where we have shown them," plus logged interactions on those impressions ("scrolls, mouse-overs, clicks, or the time spent on a given page").
-- **Social data** — "what connected friends have watched or rated."
-- **Search terms** — "millions of search terms" entered per day.
-- **External data** — "box office performance or critic reviews," sourced outside Netflix's own product.
+Part 2 lists them *(source-confirmed)*:
 
-Part 2 also names a longer tail of contextual features used in modeling more broadly: "demographics, location, language, or temporal data" **(Part 2)**.
+| Source | What the post says |
+|---|---|
+| Ratings | Several billion item ratings, millions of new ones a day |
+| Popularity | Computed over time ranges such as hourly, daily or weekly, or within a group of members by region or another similarity measure |
+| Stream plays | Several million a day, with context such as duration, time of day and device type |
+| Queue adds | Millions of items a day |
+| Metadata | Actors, director, genre, parental rating and reviews |
+| Presentations | What was recommended and where it was shown, and the member's scrolls, mouse-overs, clicks or time on the page |
+| Social data | What connected friends have watched or rated |
+| Search terms | Millions a day |
+| External data | Box office performance or critic reviews |
 
-**Why popularity is computed multiple ways rather than as one fixed number — the post's own stated freshness mechanism.** Unlike a single static popularity score, Part 2 is explicit that popularity is computed "over various time ranges, for instance hourly, daily, or weekly" and segmented "by region or other similarity metrics" **(Part 2)** — meaning a title's popularity signal can reflect what's trending *right now*, in a specific region or similarity cohort, rather than only a slow-moving all-time average. This is the post's own closest equivalent to an explicit freshness mechanism, though it describes no analogous correction for the predicted-rating signal itself — unlike capstone #3's YouTube paper, which names a specific "example age" feature for exactly this purpose (a different source, not claimed here as something this post also describes).
+Other features include demographics, location, language and temporal data.
 
-**What happens when the data is wrong or stale — an honest gap, not papered over.** Neither post describes a correction mechanism for stale or wrong data the way capstone #3's YouTube paper (recency-bias correction via "example age") or capstone #7's Uber paper (weekly retraining, monitored drift) do, and this document does not invent one. The one general mechanism the posts do confirm — the offline/online testing cycle covered in Step 6 — is their implicit answer: a change that looks good offline but fails a live A/B test gets caught before full rollout rather than silently shipped and left to decay. That mechanism catches *any* bad change, data-driven or otherwise — broader than a data-staleness fix specifically, but the honest answer the source actually gives.
+### Popularity as freshness
 
-**Trade-offs considered:** Computing popularity across multiple time windows and multiple member segments (rather than one single global number) buys real freshness and local relevance — a title trending this week in one region shows up in that region's ranking signal faster than a single all-time global popularity score could reflect it — at the cost of maintaining several parallel popularity computations instead of one. Relying on implicit behavioral signals (stream plays, queue adds, presentations) as the bulk of the ranking-relevant data, rather than only explicit ratings, buys the same "vastly more volume, deep into the catalog's long tail" advantage capstone #3's YouTube paper names for implicit watch signals over explicit ratings — at the cost of every one of those signals being a *noisier*, more confounded proxy for genuine satisfaction than an explicit rating is (a stream play doesn't confirm the member liked what they watched, only that they started it).
+Computing popularity over several windows and within groups means a title trending now, in one region or cohort, shows up in that group's signal sooner than in one all-time number. The posts describe no similar mechanism for the predicted rating. Part 1 says the Prize algorithms were not built to adapt as members added more ratings, and that Netflix had to overcome that.
+
+### Presentations
+
+The presentations data lets Netflix see how a recommendation affected what a member did. The posts do not say how they correct for the position at which an item was shown. That is a risk to check, since a title shown first is clicked more for being first.
+
+### Stale or wrong data
+
+Neither post describes a correction mechanism. The one process they describe is the offline and online testing cycle in Step 6, which catches a bad change and not a slow decay.
+
+### Trade-offs considered
+
+Several popularity windows give freshness and local relevance at the cost of several computations. Implicit signals give far more volume than ratings and are noisier: a play shows a member started a title, not that they liked it.
 
 ---
 
 ## Step 4: Model/Agent Core Design
 
-This is this capstone's central teaching point, in the source's own structure: **ranking is a distinct modeling problem from rating prediction**, solved with its own function that combines rating prediction as just one input among several.
+### From popularity to a ranking function
 
-**The starting point: a ranking function as a linear combination of two signals.** Part 2 opens with the simplest possible baseline and its problem: "If you are looking for a ranking function that optimizes consumption, an obvious baseline is item popularity. The reason is clear: on average, a member is most likely to watch what most others are watching. However, popularity is the opposite of personalization: it will produce the same ordering of items for every member. Thus, the goal becomes to find a personalized ranking function that is better than item popularity" **(Part 2)**. Part 2's fix: combine popularity with the member's own predicted rating, rather than using either alone — "rather than using either popularity or predicted rating on their own, we would like to produce rankings that balance both of these aspects" **(Part 2)**. The resulting function, in the post's own notation (reproduced here with standard subscript notation rather than the raw-text spacing artifacts the original HTML's subscript/italic formatting left behind when stripped to plain text):
+Part 2 starts from the obvious baseline: popularity. On average, a member is most likely to watch what most others are watching. But popularity is the opposite of personalization, since it produces the same ordering for every member. Predicted rating on its own risks niche and unfamiliar picks. The post wants rankings that balance both, and gives a simple scoring function as an illustration:
 
+```text
+f_rank(u, v) = w1 × p(v) + w2 × r(u, v) + b
 ```
-f_rank(u, v) = w1 · p(v) + w2 · r(u, v) + b
-```
 
-where `u` = user (member), `v` = video item (title), `p(v)` = the title's popularity score, `r(u, v)` = the member's predicted rating for that title, and `w1`, `w2`, `b` are learned weights and a bias term **(Part 2)**. The post is explicit that the bias term `b` is a constant that "ends up not affecting the final ordering" once titles are sorted by score — it shifts every title's score equally, so it can't change their relative rank.
+Here u is the member, v the video, p the popularity and r the predicted rating. The bias b is constant and does not affect the final order. Items are passed through the function and sorted by descending score. The post says there are many ways to build one, from simple scoring to pairwise preferences to optimization over the whole ranking.
 
 ```mermaid
 flowchart LR
-    POP["Popularity p(v)\n(hourly/daily/weekly windows,\nregion/similarity segments)"] --> COMB
-    RAT["Predicted rating r(u,v)\nSVD/RBM-era signal"] --> COMB
-    MORE["More features\n(some help, some don't)"] --> COMB
-    COMB["Learning to rank\n(learn w1, w2, ... from\nhistorical positive/negative examples)"] --> FRANK["f_rank(u,v) = w1*p(v) + w2*r(u,v) + b"]
-    FRANK --> SORTSTEP["Sort titles by score\n(per-member, per-row)"]
+    POP["Popularity p(v)"] --> F["f_rank = w1 p + w2 r + b"]
+    RAT["Predicted rating r(u,v)"] --> F
+    MORE["More features"] --> F
+    F --> SORT["Sort by score"]
 ```
 
-### Sidebar — Ranking function (a weighted, multi-signal score, as distinct from a single pointwise prediction)
+### Setting the weights
 
-*(First appearance in this repo of this specific concept — this is a recommendation-ranking-specific modeling pattern, not core infra, and has no existing Lesson 1–6 home. It is related to, but distinct from, two already-glossaried concepts from earlier capstones in this repo: capstone #3's two-stage retrieval-then-rank architecture, which is about funnel *stages* narrowing a huge corpus down in two passes, not about how a single stage's score is computed; and capstone #4's LambdaRank/pairwise learning-to-rank, which is about the *training loss* used to fit a ranking model's weights, not about what inputs that model combines. This Sidebar names the piece neither of those already covers: the ranking function itself, as a score built by combining several distinct signals rather than being equal to any one of them.)*
+The post names two ways. One is to sample the weight space and let members decide through many A/B tests, which it calls time consuming and not very cost effective. The other is to formulate it as a machine learning problem: select positive and negative examples from historical data and let an algorithm learn the weights that optimize the goal. That family is learning to rank, central to search engines and ad targeting. The post adds a crucial difference for recommendations: there is no global notion of relevance, and the model has to be personalized.
 
-- **Why?** A single predicted value — a rating, a click probability, a popularity count — captures only one slice of what makes a recommendation good. Sorting purely by predicted rating risks Step 1's named failure (niche, unfamiliar picks); sorting purely by popularity discards personalization entirely, since it "will produce the same ordering of items for every member" **(Part 2)**. A ranking function combines several such signals into one sortable score, so none carries the whole burden alone.
-- **What?** A **ranking function** is a scoring function that takes a user and an item (and whatever other contextual signals are available) and returns a single real-valued score, combining several input signals rather than being identical to any one of them. Part 2's own starting point is the simplest version — a **linear combination** (weighted sum plus bias, as above) — but the post is explicit this is only illustrative, not the full production system: "There are many ways one could construct a ranking function ranging from simple scoring methods, to pairwise preferences, to optimization over the entire ranking" **(Part 2)**, and separately: "apart from popularity and rating prediction, we have tried many other features at Netflix. Some have shown no positive effect while others have improved our ranking accuracy tremendously" **(Part 2)**.
-- **How?** The weights (`w1`, `w2`, and however many more features get added) aren't picked by hand. Part 2 names two approaches directly, and prefers the second: "You could sample the space of possible weights and let the members decide what makes sense after many A/B tests. This procedure might be time consuming and not very cost effective. Another possible answer involves formulating this as a machine learning problem: select positive and negative examples from your historical data and let a machine learning algorithm learn the weights that optimize your goal" **(Part 2)**. This family of techniques is named directly: "**Learning to rank**" — a machine-learning subfield, defined here since the post names it without explaining it, in which a model is trained not to predict a single absolute value, but to produce a *relative ordering* as close as possible to the correct one, typically via labeled or inferred preference pairs rather than single independent data points. The post draws out one contrast worth keeping: "a crucial difference in the case of ranked recommendations is the importance of personalization: we do not expect a **global notion of relevance**, but rather look for ways of optimizing a personalized model" **(Part 2)** — unlike a search engine or ad-ranking system (also classic learning-to-rank applications), where a document or ad is more or less relevant to a query independent of who's asking, Netflix's function must produce a *different* correct ordering per member, because the optimized target (predicted enjoyment) is itself member-specific, not query-specific.
+### A worked example *(illustrative)*
 
-**A worked, illustrative numeric example: how a lower-rated title can out-rank a higher-rated one.** Netflix's own posts don't give a fully worked numeric example — this is this document's own construction, built on the `f_rank` formula above, to make the central teaching point concrete: two titles whose relative rank *flips* once popularity is added, even though one has a clearly higher predicted rating.
+Normalize both signals to a 0 to 5 scale, with w1 = 0.6 and w2 = 0.4. Title A is a niche documentary, with popularity 0.3 and a predicted rating of 4.5. Title B is a blockbuster, with popularity 4.6 and a predicted rating of 3.6.
 
-```
-# Illustrative weights and scores -- not Netflix's own published values.
-# p(v) and r(u,v) both normalized to a 0-5 scale for comparability.
-
-w1, w2, b = 0.6, 0.4, 0.0   # illustrative: popularity weighted slightly
-                            # more heavily than predicted rating
-
-# Title A: a niche prestige documentary this member would likely rate highly,
-#          but that almost nobody else on the platform watches.
-p_A, r_A = 0.3, 4.5         # low popularity, high predicted rating
-
-# Title B: a broadly popular blockbuster this member would rate only
-#          moderately, but that performs well across the whole member base.
-p_B, r_B = 4.6, 3.6         # high popularity, more moderate predicted rating
-
-f_rank_A = w1 * p_A + w2 * r_A   # 0.6*0.3 + 0.4*4.5 = 0.18 + 1.80 = 1.98
-f_rank_B = w1 * p_B + w2 * r_B   # 0.6*4.6 + 0.4*3.6 = 2.76 + 1.44 = 4.20
-
-# Despite A's predicted rating (4.5) being noticeably higher than B's (3.6),
-# B's combined score (4.20) beats A's (1.98) -- B ranks higher in the row,
-# precisely the "balance both aspects" behavior Part 2 describes, and
-# precisely why sorting by r(u,v) alone would have put A on top instead.
+```text
+A = 0.6 × 0.3 + 0.4 × 4.5 = 0.18 + 1.80 = 1.98
+B = 0.6 × 4.6 + 0.4 × 3.6 = 2.76 + 1.44 = 4.20          B ranks first
+A ranks first only if w2 × 0.9 > w1 × 4.3, that is w2 ÷ w1 above 4.8
 ```
 
-This illustrative flip is the numeric version of Part 2's own scatter diagram (the "Two-dimensional ranking" chart, viewed via the Wayback Machine snapshot): it plots titles by predicted rating on one axis and popularity on the other, with a diagonal "Score" arrow and five titles numbered 1–5 along it in final-rank order — the same point made arithmetically above: position on either axis alone doesn't determine rank, only position relative to the combined-score line does.
+So the order flips on the weight ratio. The weights, and the scales of the signals, decide what the function is.
 
-**The real, confirmed result: adding features and optimizing the model measurably beats popularity and rating alone.** Part 2 includes a bar chart, titled "Ranking improvement over baseline," comparing three configurations against a popularity-only baseline (0% improvement, by construction): "+ Ratings" and "+ More Features & Optimized Models." Viewed directly from the Wayback Machine snapshot (no alt-text/caption gives exact numbers, so these are this document's own visual estimate against the chart's labeled 0–250% gridlines): the "+ Ratings" bar reaches roughly **35%** improvement over the popularity baseline, and the "+ More Features & Optimized Models" bar reaches roughly **225%** improvement over the same baseline — a visibly much larger jump from adding further features and tuning the model than from adding predicted rating alone. The post doesn't name which features drove that larger jump (beyond "some have shown no positive effect while others have improved our ranking accuracy tremendously"), so this document reports only the chart's shape and rough magnitude, not a feature-by-feature breakdown the source doesn't give.
+### The chart in Part 2
 
-**Candidate model families named directly (Part 2):**
-- **General supervised classification methods repurposed for ranking** — "Logistic Regression, Support Vector Machines, Neural Networks, or Decision Tree-based methods such as Gradient Boosted Decision Trees (**GBDT**)" — GBDT already defined in full in this repo's capstone #4, `case-studies/airbnb-search-ranking/README.md` — linked here rather than re-derived.
-- **Algorithms purpose-built for learning to rank** — "a great number of algorithms specifically designed for learning to rank have appeared in recent years such as **RankSVM** or **RankBoost**" **(Part 2)**.
+A bar chart titled "Ranking improvement over baseline" has popularity at zero, then "+ Ratings" at about one third (roughly 32% by reading the bar), then "+ More Features & Optimized Models" at about 225%. The post does not say what metric the chart measures, whether it is offline or online, or which features drove the larger gain. It says some features showed no positive effect while others improved ranking accuracy tremendously. The chart supports the direction and not a feature-by-feature account.
 
-The post is explicit there's no universal answer: "There is no easy answer to choose which model will perform best in a given ranking problem. The simpler your feature space is, the simpler your model can be. But it is easy to get trapped in a situation where a new feature does not show value because the model cannot learn it. Or, the other way around, to conclude that a more powerful model is not useful simply because you don't have the feature space that exploits its benefits" **(Part 2)** — confirming model capacity and feature richness must be chosen jointly, not independently.
+### Model families the post names
 
-**MAE and RMSE, defined in full (standard regression-error metrics, not themselves a glossary-worthy new concept — same treatment this repo's capstone #2 gives AUC/LogLoss).** **MAE (mean absolute error)** is the average of the absolute differences between predicted and actual values across all predictions: `MAE = (1/n) · Σ|predicted_i − actual_i|`, treating every unit of error the same regardless of direction or magnitude. **RMSE (root mean squared error)** is the square root of the average of the *squared* differences: `RMSE = √((1/n) · Σ(predicted_i − actual_i)²)` — squaring first means larger individual errors are penalized disproportionately more than smaller ones (an error of 2 contributes 4 to the pre-root sum, not 2), so RMSE is more sensitive to occasional large misses than MAE is. Both are **pointwise prediction-accuracy metrics**: they score how close a single predicted rating is to a single actual rating, independent of any other title. Neither metric has any notion of *order* across multiple titles at all — a model could have a worse RMSE than another model while still producing a better final row ordering, and vice versa, because RMSE never looks at relative positions, only absolute per-prediction error. This is the precise, mechanical reason Step 1's central claim holds: nailing the rating-prediction metric and nailing the ranking are genuinely different optimization targets, not just different names for the same thing.
+Logistic regression, support vector machines, neural networks and gradient boosted decision trees, which are classifiers that can be used for ranking. Methods designed for learning to rank, such as RankSVM and RankBoost. The post says there is no easy answer: the simpler the feature space, the simpler the model can be, and it is easy to get trapped where a new feature shows no value because the model cannot learn it, or where a powerful model looks useless because the features do not exploit it. Part 2 also lists methods a practitioner should know, from linear regression and elastic nets to SVD, RBMs, Markov chains, LDA, association rules, random forests and clustering.
 
-**Trade-offs considered:** A simple linear ranking function (the illustrative `w1·p(v) + w2·r(u,v) + b` starting point) is easy to reason about, fast to score, and easy to debug when a ranking looks wrong — but it can only capture additive relationships between signals; it has no way to express, for instance, "popularity should matter more for new members with thin rating histories, and less for members with years of ratings behind them" without an explicit interaction feature built for that purpose. A more powerful model family (GBDT, a neural ranker, a dedicated learning-to-rank algorithm like RankSVM/RankBoost) can learn such interactions automatically, at the direct cost the post itself names: a more powerful model is only useful if the feature space actually exploits its added capacity, and a richer feature space is only useful if the model is powerful enough to learn from it — mismatching the two wastes the investment in whichever side was upgraded alone. Learning the weights from historical positive/negative examples (the ML approach) scales far better than manually sampling the weight space via sequential A/B tests, but it inherits whatever bias already exists in that historical data (Step 3's "what happens when the data is wrong" discussion) — a historical record generated under one ranking function's own past decisions, used to train the next one, is not a fully independent signal the way a from-scratch randomized experiment would be.
+### RMSE and ordering
+
+RMSE is the square root of the mean of squared errors. It scores each prediction on its own and has no notion of order across titles. An invented example *(illustrative)*: titles A, B and C truly rate 4.5, 4.0 and 3.0.
+
+| Model | Predictions for A, B, C | RMSE | Order |
+|---|---|---|---|
+| 1 | 4.0, 4.2, 3.1 | 0.32 | B, A, C (top two swapped) |
+| 2 | 5.0, 3.5, 2.0 | 0.71 | A, B, C (correct) |
+
+Model 1 has less than half the error and the wrong top pair. Model 2 has the larger error and the right order. This is the mechanical reason accuracy on ratings and quality of ranking are different targets.
+
+### Trade-offs considered
+
+A linear function is easy to debug and cannot express interactions, such as popularity mattering more for a new member. A stronger model can learn them if the features support it. Learning weights from history scales better than sequential tests and inherits whatever the earlier ranking did to the data.
 
 ---
 
 ## Step 5: Serving Architecture
 
-**What the posts themselves confirm about serving — a real but general framing, not an infrastructure diagram.** Part 1 states the serving-time requirement directly: "The goal of our ranking system is to find the best possible ordering of a set of items for a member, within a specific context, in real-time. We decompose ranking into scoring, sorting, and filtering sets of movies for presentation to a member" **(Part 1)** — **scoring, sorting, and filtering**, the three operations ranking decomposes into. Neither post goes further into infrastructure specifics (no latency SLA, no caching-layer description, no candidate-generation detail) — per the Confidence note above, this section is this document's own constructed elaboration of that framing, not a Netflix-confirmed architecture.
+### What the posts say
 
-**An illustrative, constructed request path, built directly on the post's own scoring/sorting/filtering framing.** For one row on one member's homepage, at the moment that row needs to render:
+Only that ranking is decomposed into scoring, sorting and filtering sets of movies for presentation, in real time. They give no latency, no caching description and no candidate generation. The rest of this step is this document's design *(illustrative)*.
 
-1. **Candidate set** — titles for the row are assembled (e.g. "Dramas," narrowed to that genre) — analogous in shape, though not confirmed as the same mechanism, to capstone #3's YouTube candidate-generation stage.
-2. **Scoring** — Step 4's `f_rank(u, v)` is evaluated once per candidate, using the member's predicted rating, the current popularity signal (per Step 3's multi-window mechanism), and whatever other features the live model uses.
-3. **Sorting** — candidates are ordered by descending score.
-4. **Filtering** — titles already watched (or already queued, depending on the row's purpose), parental-control-excluded, or otherwise ineligible for this row are removed before the list is returned.
-
-This four-step shape is this document's own construction; only the overall "scoring, sorting, and filtering" framing itself, and the real-time requirement, are source-confirmed. The diagram below mirrors it directly.
+### A request path
 
 ```mermaid
 flowchart LR
-    C["Candidate set\ne.g. 'Dramas' row"] --> S["Scoring\nf_rank(u,v) = w1*p(v) + w2*r(u,v) + b"]
-    S --> SO["Sorting\ndescending score"]
-    SO --> F["Filtering\nwatched / queued / parental-control"]
-    F --> OUT["Final ordered row"]
+    C["Candidates for a row"] --> S["Score: f_rank(u, v)"]
+    S --> SO["Sort by score"]
+    SO --> F["Filter: ineligible titles"]
+    F --> OUT["Ordered row"]
 ```
-
-**An illustrative request-path function, built directly on Step 4's own `f_rank(u,v) = w1·p(v) + w2·r(u,v) + b` formula** — this document's own construction, not Netflix's published serving code (which isn't public), but a concrete rendering of the scoring/sorting/filtering sequence above, using exactly the signal names Step 3 and Step 4 already established (`p(v)` = popularity, `r(u, v)` = predicted rating, `w1`/`w2`/`b` = the same learned weights and bias term):
 
 ```python
-from dataclasses import dataclass
-
-
-@dataclass
-class CandidateTitle:
-    """One candidate title for a single row -- illustrative fields only,
-    named after exactly the signals Step 3 ("Data and Models") and Step 4
-    already confirmed feed the ranking function: popularity p(v) and
-    predicted rating r(u, v)."""
-    title_id: str
-    popularity: float          # p(v), Step 3's multi-window popularity signal
-    predicted_rating: float     # r(u, v), the SVD/RBM-era signal (Step 1)
-    already_watched: bool
-    excluded_by_parental_control: bool
-
-
-def rank_row(member_id: str, candidates: list[CandidateTitle],
-             w1: float, w2: float, b: float, top_n: int) -> list[str]:
-    """Illustrative serving-time rendering of Part 1's own "scoring,
-    sorting, and filtering" framing for one row on one member's homepage.
-    Not Netflix's own published code -- a constructed illustration of the
-    three-operation sequence the post names, built directly on Step 4's
-    f_rank(u, v) = w1*p(v) + w2*r(u, v) + b formula."""
-    # 1. Scoring: evaluate f_rank(u, v) once per candidate in this row.
-    scored = [
-        (c, w1 * c.popularity + w2 * c.predicted_rating + b)
-        for c in candidates
-    ]
-
-    # 2. Sorting: order candidates by descending score.
+def rank_row(candidates, w1: float, w2: float, b: float, top_n: int) -> list[str]:
+    scored = [(c, w1 * c["popularity"] + w2 * c["predicted_rating"] + b) for c in candidates]
     scored.sort(key=lambda pair: pair[1], reverse=True)
-
-    # 3. Filtering: drop titles already watched or parental-control-excluded.
-    filtered = [
-        c for c, _score in scored
-        if not c.already_watched and not c.excluded_by_parental_control
-    ]
-
-    return [c.title_id for c in filtered[:top_n]]
+    kept = [c for c, _ in scored if not c["already_watched"] and not c["blocked"]]
+    return [c["title_id"] for c in kept[:top_n]]
 ```
 
-**Why per-row, per-member computation is the only option, given the objective from Step 1.** Because the ranking function's whole point (Step 4's popularity-vs-personalization framing) is to produce a *different* ordering per member, this step can't be precomputed and cached globally the way a "most popular this week" list could — `r(u, v)` is member-specific by construction, so the output is too, and must be computed (or refreshed) close to render time, per member, per row. What *can* be cached, consistent with Step 3's fixed-window popularity computation (hourly/daily/weekly) rather than live per-request, is `p(v)` itself — refreshed only on the windowed cadence, then read cheaply at scoring time.
+The filter's reasons, already watched and blocked, are examples. The posts do not say what is filtered.
 
-**Trade-offs considered:** Scoring every row freshly per request (rather than precomputing and caching full rows per member ahead of time) guarantees the ordering reflects the freshest available signals — the latest popularity window, the latest ratings, the latest viewing history — at the cost of real per-request compute that scales with the number of candidates per row and the number of rows per homepage (Step 2's illustrative ~3,000-evaluation figure). Precomputing and caching popularity signals on a fixed refresh cadence (rather than recomputing them live on every request) trades away some freshness — a title that goes viral in the hour since the last popularity refresh won't show that spike yet — for a large reduction in per-request compute, since popularity doesn't change meaningfully within the gap between refreshes the way a member's own predicted-rating inputs could, request to request, as they watch more titles in the same session.
+### What can be cached
+
+The predicted rating is specific to a member and a title, so the ordering is too, and it cannot be a global list. Popularity is shared and is computed on a window cadence, so it can be cached and read cheaply. A cached value is stale by up to the window, which trades some freshness for less work per request.
+
+### Trade-offs considered
+
+Scoring each row fresh keeps the order current and costs compute in proportion to rows and candidates, about 4.8 million scores a second at the assumed peak. Caching popularity saves most of the reads and misses a spike inside the window.
 
 ---
 
-## Step 6: Evaluation, Monitoring, and Iteration
+## Step 6: Evaluation, Monitoring and Iteration
 
-**Offline metrics the post names directly — and they're explicitly broader than just RMSE.** Part 2 lists the metrics tracked before anything goes live: "from ranking measures such as normalized discounted cumulative gain, mean reciprocal rank, or fraction of concordant pairs, to classification metrics such as accuracy, precision, recall, or F-score. We also use the famous RMSE from the Netflix Prize or other more exotic metrics to track different aspects like diversity" **(Part 2)**. That's three groups of offline metrics tracked side by side:
-- **Ranking measures** — NDCG, MRR, FCP.
-- **Classification metrics** — accuracy, precision, recall, F-score.
-- **Rating-prediction and other metrics** — RMSE, plus "more exotic metrics" for diversity.
+### Offline metrics
 
-**Normalized Discounted Cumulative Gain (NDCG)** is already defined in full in this repo's capstone #4, `case-studies/airbnb-search-ranking/README.md` glossary entry — linked here rather than re-derived, since it's the same metric, not a new one. Two new ranking-specific metrics the post names that haven't appeared elsewhere in this repo, defined in full on first use here (following the same precedent capstone #2 set for AUC/LogLoss — standard evaluation-metric vocabulary, defined inline rather than promoted to a Sidebar/glossary entry, since neither is itself a novel AI-native architectural concept):
-- **Mean reciprocal rank (MRR)** — for a set of queries (or, here, ranking requests) each with one known "correct" or target item, MRR is the average, across all of them, of `1 / rank`, where `rank` is the position of the correct item in the returned ordered list (rank 1 = top of the list, contributing a full 1.0; rank 10 contributes only 0.1). It rewards getting the single right answer near the top of the list specifically, and penalizes it heavily the further down that one answer falls.
-- **Fraction of concordant pairs (FCP)** — the fraction of all pairwise comparisons between a higher-truly-preferred item and a lower-truly-preferred item that the model's own ordering gets in the correct relative order (the higher-preferred item ranked above the lower-preferred one). A pair where the model's ordering agrees with the true preference order is "concordant"; one where it disagrees is "discordant." FCP is the concordant fraction across every such pair in the evaluation set — a metric that, unlike RMSE, directly measures ordering correctness rather than per-item prediction error.
+Part 2 lists the offline metrics tracked *(source-confirmed)*: ranking measures such as normalized discounted cumulative gain, mean reciprocal rank and fraction of concordant pairs; classification metrics such as accuracy, precision, recall and F-score; RMSE; and other metrics for aspects such as diversity.
 
-**The explicit, honest limit of offline metrics — the post's own stated reason online A/B testing is still required.** Part 2 states this directly, and it's the capstone's evaluation-side version of Step 1's central claim: "We keep track of how well those metrics correlate to measurable online gains in our A/B tests. However, since the mapping is not perfect, offline performance is used only as an indication to make informed decisions on follow up tests" **(Part 2)**. An improvement on any offline metric — including RMSE, including NDCG — is treated as a *hypothesis* about what might work live, never as proof by itself.
+- NDCG is defined in the [Airbnb case study](../airbnb-search-ranking/README.md).
+- Mean reciprocal rank (MRR) averages 1 divided by the rank of the correct item. Rank 1 gives 1.0 and rank 10 gives 0.1. For three requests with the right item at ranks 1, 3 and 10, MRR is (1 + 0.33 + 0.1) ÷ 3 = 0.48.
+- Fraction of concordant pairs (FCP) is the share of pairs of items, one truly preferred over the other, that the model orders correctly.
 
-**The online evaluation process — Consumer (Data) Science, the post's own name for it.** The post describes a four-step cycle: "1. Start with a hypothesis ... 2. Design a test ... 3. Execute the test ... 4. Let data speak for itself" **(Part 2)**. Scale: "Tests usually have thousands of members and anywhere from 2 to 20 cells exploring variations of a base idea. We typically have scores of A/B tests running in parallel" **(Part 2)**. The metrics ultimately trusted to make a ship/no-ship decision: "we ultimately trust member engagement (e.g. hours of play) and retention" **(Part 2)** — directly matching Step 1's stated business objective, and notably *not* an offline rating-prediction metric.
+### Why offline is only an indication
 
-```mermaid
-flowchart LR
-    H["1. Start with\na hypothesis"] --> D["2. Design\na test\n2-20 cells"]
-    D --> E["3. Execute\nthe test\nthousands of members"]
-    E --> L["4. Let data\nspeak for itself\nengagement + retention"]
-    L -. "ships or kills the idea;\nfeeds next hypothesis" .-> H
+The post says Netflix keeps track of how well the offline metrics correlate with online gains in A/B tests, and that, since the mapping is not perfect, offline performance is used only as an indication to make informed decisions on follow-up tests.
+
+### Online tests
+
+The process is four steps: start with a hypothesis, design a test, execute it, and let the data speak. Many metrics are tracked, and Netflix ultimately trusts member engagement, such as hours of play, and retention. Tests usually have thousands of members and 2 to 20 cells, and scores of tests run in parallel *(source-confirmed)*.
+
+Two things follow from those numbers *(illustrative arithmetic)*:
+
+```text
+retention near 90% with 5,000 members a cell: standard error = sqrt(0.9 × 0.1 ÷ 5,000) = 0.42%
+95% margin on the difference between two cells = 1.96 × 0.42% × sqrt(2) = about 1.2 points
+20 cells against one control at 5% each: chance of one false positive = 1 − 0.95^19 = 62%
 ```
 
-**A real, named example of this process at scale: the Top10 Marathon.** Part 2 describes "a focused, 10-week effort to quickly test dozens of algorithmic ideas related to improving our Top10 row... Think of it as a 2-month hackathon with metrics... We rolled out 6 different ideas as A/B tests each week and kept track of the offline and online metrics. The winning results are already part of our production system" **(Part 2)** — a confirmed instance of the offline-then-online pipeline above, run at a high iteration rate (6 ideas/week) rather than one change at a time.
+A test of that size can see a retention change of more than a point or so, which is a large effect, so a continuous measure such as hours of play is more sensitive. The post does not describe how it corrects for many cells. A correction is needed.
 
-**The feedback loop back into Step 3.** Every stream play, queue add, rating, search, and logged "presentation" interaction becomes new input for the next round of feature/model development — the same "behavioral data arrives as a byproduct of product usage" pattern named in earlier capstones (e.g. capstone #2's click labels, capstone #3's watch-completion labels), feeding both the ranking function's features (Step 3) and the offline metrics that screen the next A/B test.
+### The Top10 Marathon
 
-**Failure modes.**
-1. **The confirmed offline/online mapping gap itself** — Part 2's own stated reason offline metrics "are used only as an indication," not a guarantee: a model could post a genuine RMSE or NDCG improvement offline and still fail to move member engagement online, for reasons the offline metric structurally can't see (a change that looks like a better ranking on held-out historical data might not reflect how members actually respond to a changed homepage in the moment).
-2. **A popularity-reinforcement risk** — **this document's own inference, not a claim either post makes**: because the ranking function (Step 4) includes popularity as a weighted input, and popularity is itself partly a function of what the ranking function has already surfaced, there's a structural opening for a feedback loop where already-popular titles get weighted toward the top, growing more popular still, at the expense of titles a given member might have genuinely enjoyed more — the same shape of self-reinforcing loop capstone #6's LinkedIn PYMK names for its own well-connected-members case, though Netflix's posts don't discuss this risk anywhere this document found.
-3. **Rating-prediction-only ranking, if ever reverted to** — Step 1's own named failure mode (over-recommending niche/unfamiliar titles, under-recommending broadly-liked ones) would resurface directly if a future model change inadvertently let predicted rating dominate the combined score again.
+A focused 10-week effort to test dozens of ideas for the Top10 row. Six ideas were rolled out as A/B tests each week, with offline and online metrics tracked, and the winners are part of production. Six a week for ten weeks is about 60 tests.
 
-**Trade-offs considered:** Tracking a wide basket of offline metrics (NDCG, MRR, FCP, accuracy/precision/recall/F-score, RMSE, plus "more exotic metrics" for diversity) rather than a single offline number gives a richer, more honest pre-launch signal — no single metric can flag every kind of regression (a ranking-order problem an RMSE improvement wouldn't catch; a diversity problem none of the ranking-order metrics would catch) — at the cost of needing a human judgment call about which metric's movement actually matters for a given change, since the post is explicit that none of them perfectly predicts the online result anyway. Running dozens of parallel A/B tests, each with thousands of members and up to 20 cells (the Top10 Marathon's 6-ideas-per-week cadence), buys fast iteration and the ability to compare several ideas against the same baseline at once — at the cost of needing real statistical discipline to avoid false positives across that many simultaneous comparisons, a concern the post itself names in passing ("Think about dependent & independent variables, control, significance...") without detailing its own correction method.
+### Failure modes
+
+- A change that improves an offline metric and does not move engagement.
+- A popularity feedback loop: popular titles are shown more, so they get more plays and score higher. The posts do not discuss this, and it is this document's inference.
+- A model that lets predicted rating dominate again, bringing back niche picks.
+- Position effects in the presentations data, which the posts do not address.
+
+### What breaks first at 10×
+
+| Quantity | At 10× | Reason |
+|---|---|---|
+| Scores a second | About 48 million | Rows, titles and homepage loads |
+| Popularity computations | Scale with the number of windows and groups | One per title per group |
+| Test power | Better with 10 times the members per cell | Standard error falls with the square root |
+| Parallel tests | More false positives without a correction | Comparisons multiply |
+
+### Trade-offs considered
+
+A basket of offline metrics shows more kinds of regression and needs judgment about which one matters. Many parallel tests give fast iteration and need statistical discipline.
 
 ---
 
-## Source(s) and Further Reading
+## Sources and Further Reading
 
-- Amatriain and Basilico, *"Netflix Recommendations: Beyond the 5 Stars, Part 1,"* Netflix Tech Blog, April 6, 2012 — **primary**. Original URL (`techblog.netflix.com/2012/04/netflix-recommendations-beyond-5-stars.html`) no longer resolves; retrieved via Wayback Machine snapshot (`web.archive.org/web/20170430215314/http://techblog.netflix.com:80/2012/04/netflix-recommendations-beyond-5-stars.html`), fetched directly via `curl`, stripped to plain text, and read in full. Source of every claim tagged **(Part 1)** above, including the Netflix Prize/RMSE framing, the SVD/RBM production history, the confirmed 2012 scale figures (23M subscribers, 47 countries, 2B hours/quarter, 4M ratings/day, 2M queue adds/day), and the "scoring, sorting, and filtering" definition of ranking.
-- Amatriain and Basilico, *"Netflix Recommendations: Beyond the 5 Stars, Part 2,"* Netflix Tech Blog, June 20, 2012 — **primary**. Original URL (`techblog.netflix.com/2012/06/netflix-recommendations-beyond-5-stars.html`) no longer resolves; retrieved via Wayback Machine snapshot (`web.archive.org/web/20170430194230/http://techblog.netflix.com:80/2012/06/netflix-recommendations-beyond-5-stars.html`), fetched directly via `curl`, stripped to plain text, and read in full. Source of every claim tagged **(Part 2)** above, including the `f_rank(u,v) = w1·p(v) + w2·r(u,v) + b` ranking function, the "Learning to rank" framing, the named model families (Logistic Regression, SVM, Neural Networks, GBDT, RankSVM, RankBoost), the full data-sources list, the offline-metric list (NDCG, MRR, FCP, accuracy/precision/recall/F-score, RMSE), the A/B testing/Consumer Data Science process, and the Top10 Marathon example. The post's two embedded images (the "Ranking improvement over baseline" bar chart and the two-dimensional popularity/rating scatter diagram) were downloaded from their original Blogspot-hosted URLs (still reachable through the same Wayback Machine snapshot) and viewed directly for this document, not described secondhand.
-- `netflixtechblog.com` — the same two-part post's current Medium-hosted home (`.../netflix-recommendations-beyond-the-5-stars-part-1-55838468f429` and `-part-2-d9b96aa399f5`); both returned HTTP 403 to automated fetches during research for this document and were not used as a source; the Wayback Machine snapshots of the original Blogspot URLs above were used instead, per this repo's standing rule to try the Wayback Machine before treating a source as unreachable.
-- `case-studies/airbnb-search-ranking/README.md` (capstone #4) — referenced above for the already-glossaried **GBDT** and **NDCG** entries this capstone links to rather than re-defines, and for the related-but-distinct **LambdaRank/pairwise learning-to-rank** concept this capstone's Sidebar explicitly distinguishes itself from.
-- `case-studies/video-recommendation/README.md` (capstone #3) — referenced in Step 5 for the structural parallel (not confirmed as the same mechanism) between this capstone's illustrative candidate-set-per-row step and YouTube's own confirmed two-stage candidate-generation/ranking funnel, and referenced in Step 6 for the shared "behavioral data arrives as a byproduct of product usage" pattern both capstones' training/feature data share.
-- `case-studies/ctr-prediction/README.md` (capstone #2) — referenced in Step 4 for the precedent this document follows in defining MAE/RMSE/MRR/FCP in full inline without promoting them to a Sidebar/glossary entry, the same treatment that capstone gives AUC and LogLoss as standard evaluation-metric vocabulary rather than novel AI-native concepts.
-- `case-studies/pymk-friend-recommendation/README.md` (capstone #6) — referenced in Step 6 for the structural parallel this document draws (explicitly flagged as its own inference, not a claim Netflix's posts make) between a popularity-weighted ranking function's potential feedback loop and LinkedIn PYMK's own confirmed already-well-connected-members feedback loop.
-- `appendix/glossary.md` — a new entry added for **ranking function (multi-signal scoring)**, this capstone's central concept with no existing Lesson 1–6 home. **Learning to rank**, **MAE**, **RMSE**, **MRR**, and **FCP** are defined in full on first use above (Step 4 and Step 6) but, as a deliberate call consistent with capstone #2's precedent for AUC/LogLoss, were judged to be standard ML evaluation-metric/subfield vocabulary rather than genuinely new AI-native architectural concepts, and so were not given their own Sidebar or glossary entries.
+- Amatriain and Basilico, "Netflix Recommendations: Beyond the 5 Stars, Part 1," Netflix Tech Blog, April 6, 2012. The source for the Prize figures, the 2012 scale figures, the shift to streaming and the business objective.
+- Amatriain and Basilico, "Netflix Recommendations: Beyond the 5 Stars, Part 2," Netflix Tech Blog, June 20, 2012. The source for the ranking function, the data sources, the model families, the offline metrics, the A/B testing process and the Top10 Marathon.
+- [Capstone #3](../video-recommendation/README.md), [capstone #4](../airbnb-search-ranking/README.md) and [capstone #6](../pymk-friend-recommendation/README.md): related ranking and feedback-loop cases.
+- [Glossary](../../appendix/glossary.md): ranking function.
+
+Labels: *(source-confirmed)* is in one of the two posts. *(illustrative)* is a planning assumption or design of this document.

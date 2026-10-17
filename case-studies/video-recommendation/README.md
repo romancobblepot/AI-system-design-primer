@@ -1,294 +1,406 @@
 # Capstone #3: Video Recommendation — YouTube's Candidate Generation + Ranking Split
 
-**Source(s):** Primary — Covington, Adams, Sargin, *"Deep Neural Networks for YouTube Recommendations,"* RecSys 2016 (ACM DOI 10.1145/2959100.2959190, Boston, MA, USA). Google Research's own listing (`research.google/pubs/pub45530`) confirms the ACM Conference on Recommender Systems venue.
+## At a glance
 
-**Confidence:** Strong, primary source. This document was written from the paper's own full text (the RecSys 2016 PDF, ACM DOI 10.1145/2959100.2959190, fetched and read page-by-page — abstract, all five numbered sections, both figures with their captions, Table 1, and the reference list) — not from the abstract or secondhand summaries. Every specific figure, formula, architectural detail, or quoted claim below tagged **(paper)** was read directly out of that text. This particular paper is unusually generous with concrete, confirmed numbers (the sampled-softmax ">100x speedup" claim, the 1M-video/1M-search-token experimental vocabulary, 256-dimensional embeddings, the five tower-depth configurations, Table 1's per-configuration loss figures, the "7 times more parameters" embedding-vs-FC-layer comparison, the "tens of milliseconds" serving-latency ceiling), so this capstone leans more heavily on paper-confirmed numbers than illustrative ones relative to some earlier capstones in this repo — illustrative math is still needed, and flagged **(illustrative)**, anywhere the paper only gives a qualitative scale descriptor ("millions" of videos, "hundreds" of candidates, "dozens" shown) rather than an exact count. One honest, paper-confirmed negative result worth leading with, since catching this kind of thing is exactly what this repo's review discipline exists for: the paper explicitly tried **hierarchical softmax** as an alternative to its own sampled-softmax approach and **rejected it** for degrading accuracy **(paper, Section 3.1)** — a real "we tried the popular alternative and it didn't work for us" result, in the same honest spirit as capstone #2's rejection of feature hashing.
+| Topic | Summary |
+|---|---|
+| Source | Covington, Adams and Sargin, "Deep Neural Networks for YouTube Recommendations," RecSys 2016 (DOI 10.1145/2959100.2959190). |
+| Problem | Recommend videos to over a billion users from a corpus of millions, with a corpus that changes every hour and with labels that are noisy proxies for satisfaction. |
+| Core idea | Two neural networks. Candidate generation narrows millions of videos to hundreds using coarse features. Ranking scores only those hundreds with a rich feature set and sorts them by expected watch time. |
+| Candidate generation | Extreme multiclass classification: predict the next watched video among millions. Training samples several thousand negatives, which the paper reports as a more than 100 times speedup over a full softmax *(source-confirmed)*. |
+| Ranking | Logistic regression where each clicked impression is weighted by its watch time and each unclicked one by 1. Its learned odds approximate expected watch time *(source-confirmed)*. |
+| Label choices | Predict the next watch, not a random held-out one. Train on all watches, not only watches of recommended videos. Add the age of each example as a feature, and set it to zero when serving *(source-confirmed)*. |
+| Results the paper gives | Ranking loss falls from 41.6% with no hidden layers to 34.6% with a 1024, 512, 256 tower. Weighting positives and negatives equally raises it by 4.1% *(source-confirmed)*. |
+| First to break | Compute and memory at retrieval, then ranking CPU. A brute-force dot product over 10 million 256-dimensional videos reads 10.24 GB per request, and costs about 3 times the ranking stage *(illustrative)*. |
+| Easy-to-miss traps | Ranking is weighted classification, not regression. Scoring the whole corpus with the ranking network would need millions of cores. A random held-out label leaks the future. A raw watch-time weight can favor long videos. |
+| Practice PDFs | [Study edition](../../capstone-study-and-mock/video-recommendation/capstone3_video_recommendation_study.pdf) · [Mock interview](../../capstone-study-and-mock/video-recommendation/capstone3_video_recommendation_mock.pdf) |
 
-**Scope note:** This capstone covers exactly what the paper covers: the **candidate generation** network and the **ranking** network that together produce YouTube's homepage video recommendations. It does **not** cover the recommendation surface's UI/presentation layer (thumbnail selection, row layout, the mobile-app screen shown in the paper's own Figure 1), the "other candidate sources" the paper mentions blending in alongside its own candidate-generation output (a prior, separate system **(paper)**, cited as reference [3]), or anything about monetization/ads — this is an organic-recommendation paper, with no auction or bidding layer at all, unlike capstone #2's ad-ranking system.
+Evidence labels used below: *(source-confirmed)* means the figure or claim is in the paper. *(illustrative)* means it is this document's planning assumption, chosen to sit inside the paper's qualitative scale.
+
+### Concepts this case study builds on
+
+| Concept | Where it is taught | One-line recap |
+|---|---|---|
+| Embeddings, vector databases, nearest-neighbor search (C1, C2) | [Lesson 1, Group C](../../lessons/lesson-1-ai-fundamentals-refresher.md#c-retrieval-and-knowledge) | A learned vector places similar items close together, and an index finds the nearest ones. |
+| NoSQL types: a vector store is a fixed-width value keyed by an ID | [Lesson 5, Concept 2](../../lessons/lesson-5-data-layer.md#concept-2-nosql-types) | Choose the storage shape by how the data is read. |
+| Offline evaluation | [Lesson 9, Concept 2](../../lessons/lesson-9-evaluation-and-observability.md#concept-2-offline-evaluation--golden-datasets-llm-as-judge-regression-suites) | Gate changes on a fixed measurement, and know what it cannot tell you. |
+| Two-stage retrieval, sampled softmax, example age | [Glossary](../../appendix/glossary.md) | Retrieve cheaply, rank carefully; sample negatives; tell the model how old an example is. |
 
 ---
 
 ## Step 1: Clarify Requirements & Frame the ML/AI Objective
 
-**The three things that make this hard, as the paper frames them (paper):** *"Recommending YouTube videos is extremely challenging from three major perspectives: Scale... Freshness: YouTube has a very dynamic corpus with many hours of video... uploaded per second... Noise: Historical user behavior on YouTube is inherently difficult to predict due to sparsity and a variety of unobservable external factors. We rarely obtain the ground truth of user satisfaction and instead model noisy implicit feedback signals."* All three recur through this document:
-- **Scale** drives Step 2's funnel math and Step 5's serving design.
-- **Freshness** drives Step 3's example-age trick.
-- **Noise** is the direct reason Step 1's own ground-truth choice below is a *proxy*, not a direct measurement of what the product actually wants.
+### The three difficulties
 
-**What counts as ground truth / feedback signal — implicit feedback, defined in full on first use (paper).** **Implicit feedback** is a training signal inferred from what a user actually *does* (here: which videos they watch, and whether they finish them) rather than collected by explicitly asking them to rate or react to something. YouTube has real **explicit feedback** mechanisms too — thumbs up/down, in-product surveys — but the paper states directly: *"we use the implicit feedback of watches to train the model, where a user completing a video is a positive example. This choice is based on the orders of magnitude more implicit user history available, allowing us to produce recommendations deep in the tail where explicit feedback is extremely sparse."* A completed watch is the positive label; a star rating or thumbs-up never enters training.
+The paper names what makes the problem hard *(source-confirmed)*:
 
-**The objective — stated carefully, since the two stages optimize for genuinely different things (paper).** There isn't one single metric this whole system maximizes — Step 4 covers why in depth, but the shape of it has to be set here. **Candidate generation** is trained as a classification problem: given a user's history and context, predict which specific video they'll watch next (Step 4 gives the full formulation) — "watch, not click" is already baked into the label itself, since the positive example is a *completed* watch. **Ranking**, separately, is explicitly *not* trained to predict click probability: *"Our final ranking objective is constantly being tuned based on live A/B testing results but is generally a simple function of expected watch time per impression. Ranking by click-through rate often promotes deceptive videos that the user does not complete ('clickbait') whereas watch time better captures engagement."* This is the real, paper-confirmed version of the "maximize engagement, not click probability" distinction this capstone is built to teach — and it's worth being precise that it's the *ranking* stage's objective function that's explicitly watch-time-based (Step 4 covers the mechanism, weighted logistic regression), not a claim that candidate generation itself is trained on a watch-time regression target — candidate generation's classification framing is a different design choice, covered in full in Step 4's Sidebar.
+- Scale: algorithms that work on small problems fail here, and the corpus and the user base are both enormous.
+- Freshness: many hours of video are uploaded every second, so the system must model new content and the user's latest actions. Balancing new against established videos is an exploration and exploitation question.
+- Noise: behavior is hard to predict because of sparsity and unobservable factors. The system rarely obtains ground truth about satisfaction, and models noisy implicit feedback instead. Video metadata is also poorly structured.
 
-**Explicitly out of scope:**
-- The recommendation surface's UI/presentation layer (thumbnail selection, row ordering, the mobile-app screen — shown only as an illustrative screenshot in the paper's Figure 1, never designed in the paper's text).
-- The "other candidate sources" the paper says get blended in alongside this system's own candidates (a separate, earlier system, reference [3], not re-derived here).
-- Since this is an organic-recommendation paper with no monetization layer, there's no auction/bidding/ads boundary to draw the way capstone #2 had to draw one.
+### Ground truth: implicit feedback
 
-**Trade-offs considered:** Training on implicit watch-completion signal instead of explicit ratings buys orders-of-magnitude more training data and reaches "deep in the tail" where explicit feedback would be hopelessly sparse (paper, quoted above) — but it's a genuine proxy for what the product actually wants (a satisfied, returning user), not a direct measurement of it, exactly the same structural risk capstone #2's Step 1 named for raw click/no-click labels, just one layer removed (a *completed* watch is a stronger behavioral signal than a *click*, but it's still inferred satisfaction, not stated satisfaction). Splitting the objective across two stages — a classification label for candidate generation, an explicit watch-time regression target for ranking — means the system never optimizes one single unified loss end to end, which costs some architectural simplicity, but buys each stage a formulation suited to its own job: candidate generation needs a formulation that scales to millions of classes cheaply (Step 4's extreme-multiclass framing), while ranking needs a formulation precise enough to distinguish "this user would watch this specific impression" from "this user generally likes this kind of video" — a distinction a single shared objective across both stages would blur.
+Implicit feedback is a label inferred from what users do, here which videos they watch, instead of asking them. YouTube also has explicit signals such as thumbs up and surveys. The paper trains on watches anyway, where a user completing a video is a positive example. Its reason: orders of magnitude more implicit history exists, which allows recommendations deep in the tail where explicit feedback is extremely sparse.
+
+### One system, two objectives
+
+The two networks are trained for different jobs.
+
+| Stage | Training problem | What it optimizes |
+|---|---|---|
+| Candidate generation | Classify the next watched video among millions | Broad relevance, with high precision in a small set |
+| Ranking | Logistic regression on impressions, positives weighted by watch time | Expected watch time per impression |
+
+The paper explains the ranking choice directly: ranking by click-through rate often promotes deceptive videos that users do not complete, while watch time better captures engagement. It adds that the final ranking objective is constantly tuned with live A/B tests and is generally a simple function of expected watch time per impression *(source-confirmed)*.
+
+Ranking has other jobs besides picking the best of the set. It specializes and calibrates candidate predictions for the particular interface: a user may often watch a video but be unlikely to click its homepage thumbnail. It also combines candidate sources whose scores are not directly comparable.
+
+### What a watch-time objective can reward
+
+Weighting by watch time rewards long watches. A click on a 60-minute video watched to the end counts for 20 times a 3-minute video watched to the end. The paper does not discuss this, and it says the production objective is a tuned function of expected watch time, so the raw sum is not necessarily what ships. Treat length bias as a risk to measure, for example by slicing results by video length.
+
+### Out of scope
+
+- The presentation layer: thumbnails, row layout, the app screen of Figure 1.
+- The other candidate sources the paper says can be blended in, a separate earlier system.
+- Monetization. This is an organic recommendation paper with no auction.
+
+### Trade-offs considered
+
+Watch labels give far more data than explicit ratings and reach the tail. They remain a proxy for a satisfied, returning user, and a completed watch is stronger evidence than a click without being the same as satisfaction. Splitting the objective gives each stage a formulation that suits its job, at the cost of never optimizing one loss end to end.
 
 ---
 
 ## Step 2: Back-of-Envelope Constraints
 
-**Confirmed production scale (paper):**
-- More than **a billion users**.
-- A corpus described only qualitatively as **"millions"** of videos reaching candidate generation, narrowed to **"hundreds"** of candidates, narrowed again to **"dozens"** actually shown (Figure 2's funnel diagram, labeled exactly this way).
-- Models that **"learn approximately one billion parameters and are trained on hundreds of billions of examples."**
-- For candidate generation's serving-time scoring specifically, a **"strict serving latency of tens of milliseconds."**
+### What the paper says about scale
 
-None of these are exact counts — "millions," "hundreds," "dozens," and "tens of milliseconds" are the paper's own chosen level of precision, which is exactly why the arithmetic below has to pick explicit, clearly-labeled illustrative anchors *within* that confirmed scale rather than inventing a different order of magnitude.
+- More than a billion users.
+- A corpus of millions of videos, narrowed to hundreds of candidates, then to dozens shown (Figure 2).
+- Models that learn approximately one billion parameters, trained on hundreds of billions of examples.
+- A strict serving latency of tens of milliseconds for scoring candidates.
 
-**The funnel-reduction calculation that makes Figure 2's diagram concrete.** Taking illustrative values consistent with the paper's own qualitative labels: a corpus of **10 million videos** (illustrative — "millions," and larger than the paper's own 1M-video *experimental* vocabulary cap from Section 3.5, since that cap was chosen for one reported experiment, not stated as the production corpus size), a candidate-generation output of **500 candidates** (illustrative — "hundreds"), and a final ranked list of **20 videos** (illustrative — "dozens"):
+All are qualitative. The arithmetic below picks anchors inside them *(illustrative)*.
 
-```
-candidate_generation_reduction = 10,000,000 videos ÷ 500 candidates
-                                = 20,000x reduction
+### The funnel
 
-ranking_stage_reduction        = 500 candidates ÷ 20 shown
-                                = 25x reduction
-
-overall_corpus_to_screen_ratio = 10,000,000 ÷ 20
-                                = 500,000x reduction
-```
-
-The vast majority of the funnel's narrowing (20,000x out of 500,000x total) happens at the *candidate-generation* stage, using only the coarse signals Step 4 describes — the arithmetic reason a two-stage design is viable at all: candidate generation doesn't have to be nearly as precise as ranking, it just has to reliably keep the genuinely relevant videos somewhere in its much smaller output set, cheaply, at corpus scale.
-
-```mermaid
-flowchart LR
-    CORPUS["Full corpus\n~10M videos (illustrative)"] -->|"candidate generation\n20,000x reduction"| CAND["Candidates\n~500 videos"]
-    CAND -->|"ranking\n25x reduction"| SHOWN["Shown to user\n~20 videos"]
+```text
+corpus                 = 10,000,000 videos
+after candidate gen    =        500 candidates       20,000× fewer
+after ranking          =         20 shown                25× fewer
+corpus to screen       = 10,000,000 ÷ 20 = 500,000×
+requests per day       = 1,000,000,000 users × 2 loads = 2,000,000,000
+average rate           = 2,000,000,000 ÷ 86,400 = 23,148 requests/s
+peak rate (3×)         = 69,444 requests/s
 ```
 
-**Why "tens of milliseconds" at "millions" of videos rules out brute-force scoring (illustrative arithmetic on a paper-confirmed latency ceiling).** An illustrative average request rate, anchored to the paper's confirmed "more than a billion users" and assuming **2 recommendation-page loads/user/day** (illustrative — not paper-stated):
+The paper's experiments use a 1-million-video vocabulary. That is the size of one experiment, not the production corpus.
 
+### What each step costs
+
+Cost is counted in multiply-adds (MACs). The tower sizes are the paper's 1024, 512 and 256 layers. The input widths are assumptions: 520 for candidate generation and 1,000 for ranking.
+
+```text
+candidate-gen tower   = 520×1,024 + 1,024×512 + 512×256 = 1.19 million MACs per request
+ranking tower         = 1,000×1,024 + 1,024×512 + 512×256 = 1.68 million MACs per candidate
+ranking, 500 cands    = 1.68 million × 500 = 840 million MACs per request
+ranking, whole fleet  = 840 million × 23,148 = 19.4 trillion MACs/s
+at 20 billion MACs/s per core  ≈ 972 cores on average, about 2,900 at peak
 ```
-daily_requests (illustrative) = 1,000,000,000 users × 2 loads/day
-                               = 2,000,000,000 requests/day
 
-average_qps = 2,000,000,000 ÷ 86,400 seconds/day
-            ≈ 23,148 requests/sec, averaged across the day
-```
+The rate of 20 billion MACs a second per core is an assumption. Two alternatives show why the funnel is built as it is.
 
-At roughly 23,000 requests/sec, each one needing a top-N lookup across a 10-million-video corpus *within tens of milliseconds* (the paper's own confirmed ceiling), scoring every video in the corpus for every request — a full forward pass of the ranking network's rich feature set against all 10 million videos, 23,000 times a second — is not a close call computationally; it's the direct motivation for everything Step 5 does with approximate, sublinear-in-corpus-size retrieval instead.
+| Design | Work per request | At 23,148 requests/s |
+|---|---|---|
+| Brute-force dot product, 10 million videos × 256 dimensions | 2.56 billion MACs, 10.24 GB read in float32 | 59 trillion MACs/s, about 3 times the ranking stage |
+| Ranking network on every video | 1.68 million × 10 million = 16.8 trillion MACs | 3.9 × 10^17 MACs/s, about 19 million cores |
 
-**Trade-offs considered:** A larger illustrative candidate-set size (say, 1,000 instead of 500) gives the ranking stage more material to find a genuinely great recommendation within — directly raising candidate generation's effective recall ceiling — but it also directly doubles ranking's per-request compute, since ranking's rich per-candidate feature computation (Step 4, Step 5) runs once per candidate, not once per request; this is the same trade Step 4's architecture makes explicit as a design choice, not a free lunch. The illustrative corpus-size choice (10 million vs., say, 50 million) changes the funnel's absolute reduction ratio but not its *shape* — the overwhelming majority of narrowing still happens at the candidate-generation stage regardless of exactly how large "millions" is taken to mean, which is why this document treats the funnel's qualitative shape (paper-confirmed: millions → hundreds → dozens) as the load-bearing fact and the specific corpus-size anchor as illustrative, the same discipline capstone #1 and #2 both applied to their own illustrative scale anchors.
+Scoring the whole corpus with the ranking network is out of the question. That is the case for two stages. A brute-force dot product for retrieval is expensive but not absurd, and reading 10.24 GB takes about 0.1 s at an assumed 100 GB/s on one machine, which is more than the tens-of-milliseconds budget. An index that visits only part of the vectors cuts both costs, which is the case for approximate search (Step 5).
+
+### A parameter check
+
+The experiments embed 1 million videos, 1 million search tokens and 1 million output classes at 256 floats each. That is 768 million parameters, about 3.1 GB in float32. It is the same order as the paper's production figure of about a billion. The paper does not say how many parameters the experimental models had.
+
+### Trade-offs considered
+
+A bigger candidate set raises the ceiling on recall and doubles the ranking cost, since ranking runs once per candidate. A larger corpus changes the ratios and not the shape: most of the narrowing still happens in candidate generation.
 
 ---
 
 ## Step 3: Data / Knowledge Pipeline
 
-**What data exists and how it's used as training signal (paper):** two confirmed design choices shape the training distribution directly:
-- **Every YouTube watch counts, not just watches from this system's own recommendations:** *"Training examples are generated from all YouTube watches (even those embedded on other sites) rather than just watches on the recommendations we produce."* The paper is explicit about why this matters: *"Otherwise, it would be very difficult for new content to surface and the recommender would be overly biased towards exploitation. If users are discovering videos through means other than our recommendations, we want to be able to quickly propagate this discovery to others via collaborative filtering."*
-- **A fixed number of examples per user:** *"generate a fixed number of training examples per user, effectively weighting our users equally in the loss function. This prevented a small cohort of highly active users from dominating the loss."*
+### Training examples
 
-**Label and context selection — a subtler data-pipeline decision than it first looks (paper).** It would be natural to train the classifier by holding out a random watch from a user's history and predicting it from the rest, the way many collaborative-filtering systems implicitly do. The paper found this performs badly, for a concrete, named reason: *"Natural consumption patterns of videos typically lead to very asymmetric co-watch probabilities. Episodic series are usually watched sequentially and users often discover artists in a genre beginning with the most broadly popular before focusing on smaller niches. We therefore found much better performance predicting the user's next watch, rather than predicting a randomly held-out watch."*
+Two choices shape the training data *(source-confirmed)*:
 
-Concretely, the paper's own Figure 5 contrasts two labeling schemes:
-- **Random held-out watch:** lets the model see watches that happened *after* the label chronologically — *"this leaks future information and ignores any asymmetric consumption patterns."*
-- **"Rolled back" next watch:** history is rolled back to a fixed point in time, and the model predicts only the next watch after that point, using only earlier actions as input.
+- Examples come from all YouTube watches, even those embedded on other sites, not only from watches of recommended videos. Otherwise new content would struggle to surface and the recommender would be biased toward exploitation. Discovery by other means should propagate through collaborative filtering.
+- A fixed number of examples is generated per user, which weights users equally in the loss. This stops a small cohort of heavy users from dominating.
 
-The paper reports the latter performed better in A/B testing — a label-construction choice, not a model-architecture choice, driving a real production metric.
+### Label and context
+
+Many collaborative filtering systems hold out a random watch and predict it from the rest of the history. The paper found this performs worse, and gives the reason: natural consumption is asymmetric. Episodes are watched in order, and users discover a genre by its most popular items before moving to niches. A random held-out watch lets the model see actions that came after the label, which leaks future information.
+
+The paper's alternative rolls back the history. It picks a random watch as the label and uses only the actions taken before it as input. This performed better in live A/B tests. The paper says the choice has an outsized effect on live results and is very difficult to measure offline.
 
 ```mermaid
 flowchart LR
     subgraph random["Random held-out watch (worse)"]
-        H1["User history\n(all watches)"] --> R1["Hold out one\nrandom watch"]
-        R1 --> L1["Label: that watch\n(future info leaks in)"]
+        H1["User history"] --> R1["Hold out one watch,\nuse all others as input"]
+        R1 --> L1["Future actions leak in"]
     end
-    subgraph rolled["Rolled-back next watch (better, A/B-confirmed)"]
-        H2["User history"] --> CUT["Roll back to\nfixed point in time"]
-        CUT --> L2["Label: next watch\nafter that point only"]
+    subgraph rolled["Rolled-back next watch (better in A/B)"]
+        H2["User history"] --> CUT["Pick a watch as the label,\ninput only earlier actions"]
+        CUT --> L2["No leak"]
     end
 ```
 
-**Withholding information to prevent the model from gaming the surrogate problem (paper).** A second data-pipeline subtlety, with a concrete worked example: if a user has just searched "taylor swift," a classifier trained naively on this as input, predicting the user's next watch, will learn to simply reproduce whatever's on that search results page — *"Unsurpisingly [sic], reproducing the user's last search page as homepage recommendations performs very poorly."* The fix: discard sequence/ordering information and represent the user's search history as an unordered bag of tokens, so the classifier never knows which specific query immediately preceded the label it's trying to predict.
+### Withholding information
 
-### Sidebar — "Example age": correcting for training-data recency bias
+A user has just searched for "taylor swift". A classifier predicting the next watch learns that it will probably be a video from that search results page, and reproducing the last search page as homepage recommendations performs very poorly. The paper discards the order of searches and represents them as an unordered bag of tokens, so the classifier does not know where the label came from.
 
-*(This concept has no existing Lesson home — it's a training-data-labeling technique specific to recommender freshness, not covered by Lessons 1–7's infra/AI-fundamentals material.)*
+### Sidebar: example age
 
-- **Why?** A model trained to predict future behavior from historical examples inherits an implicit bias toward the past, by construction — the paper states this directly: *"Machine learning systems often exhibit an implicit bias towards the past because they are trained to predict future behavior from historical examples."* YouTube's video-popularity distribution is highly non-stationary (a brand-new video's popularity trajectory looks nothing like an established video's), but a model trained on several weeks of accumulated history will, left uncorrected, learn only the *average* watch likelihood across that whole training window — systematically underrating how popular a genuinely fresh video is *right now*, at serving time, versus its average popularity smeared across the weeks of training data.
-- **What?** **Example age** is a feature equal to how old each training example is (how much time has elapsed between that example and the end of the training window) — fed directly into the model during training, as one more input alongside watch history and demographics. This lets the model learn the actual *shape* of a video's popularity curve over time (sharp early spike, decay, etc.) instead of only the time-averaged rate.
-- **How?** At training time, each example's age is computed and fed in as described above. At serving time — this is the correction's whole point — the feature is deliberately **set to zero (or slightly negative)**, specifically to tell the model *"you are predicting right now, at the very end of the training window,"* rather than letting it default to the training-window average. The paper confirms this concretely with Figure 4: for one specific video, *"the model trained with example age as a feature is able to accurately represent the upload time and time-dependant popularity observed in the data. Without the feature, the model would predict approximately the average likelihood over the training window."*
+Models trained on history are biased toward the past. A model trained over a window of several weeks reflects the average watch likelihood of that window, and video popularity is highly non-stationary. A fresh video would be underrated.
 
-**What happens when the data is wrong or stale:** per the Scale/Freshness/Noise framing above, two distinct freshness gaps exist structurally:
-- **A cold-start-shaped gap:** a video uploaded after the current training run started has no watch history yet to learn from, and only becomes fully reachable by the collaborative-filtering signal once a subsequent training cycle (the paper's own stated training window is several weeks) has ingested data about it.
-- **A serving-time calibration risk specific to the example-age trick itself:** the zero/slightly-negative serving-time value is only correct if it actually represents "the very end of the training window" — if the gap between a model's training cutoff and its actual serving window grows (a stale deployed model), the example-age feature starts systematically misrepresenting how fresh "now" really is, quietly reintroducing a version of the exact bias it exists to remove.
+The paper feeds the age of each training example as a feature. Age is measured back from the end of the training data. At serving time the feature is set to zero, or slightly negative, to say that the model is predicting at the very end of the training window. Figure 4 shows, for one video, that the model with the feature follows the video's upload time and popularity curve and the model without it predicts roughly the window average. The paper reports improved offline holdout precision and a dramatic increase in watch time on recently uploaded videos in A/B tests *(source-confirmed)*.
 
-**Trade-offs considered:** Training on *all* YouTube watches (not just watches that originated from this system's own past recommendations) reduces the filter-bubble/exploitation risk the paper names directly, but it also means some of the positive training signal comes from discovery paths the system had no influence over and can't directly attribute — a real, accepted cost in exchange for faster propagation of genuinely new, organically-discovered content. Predicting the user's *next* watch (with history "rolled back" to a fixed point) instead of a randomly held-out watch is the paper's own confirmed better choice for live A/B performance, but it's a harder label-construction scheme to implement and reason about than the naive random-holdout approach most collaborative-filtering systems default to. The example-age correction fixes a real, confirmed recency bias, but it's a single scalar feature doing real interpretive work — set it to the wrong serving-time value, or let the model go stale relative to its own training window, and the correction's benefit degrades quietly rather than failing loudly.
+The feature carries an assumption. Zero means "now is the end of the training window". If the served model is old, "now" is later than the window's end, and the feature quietly understates how fresh things are. That follows from the design and is not a claim of the paper.
+
+### Trade-offs considered
+
+Training on all watches reduces the filter-bubble risk and means part of the signal comes from paths the system cannot attribute. The next-watch label is harder to build than a random holdout and, per the paper, better online. Example age is one scalar doing real work, so a wrong serving value degrades results quietly.
 
 ---
 
-## Step 4: Model/Agent Core Design — Two-Stage Retrieval-Then-Rank, and Extreme Multiclass Classification
+## Step 4: Model/Agent Core Design — Two Stages and Extreme Multiclass Classification
 
-### Sidebar — the two-stage retrieval-then-rank architecture (candidate generation + ranking)
+### Sidebar: two-stage retrieval then ranking
 
-*(This concept has no existing Lesson home — Lessons 1–7 cover classic infra and AI-app fundamentals generally, not this specific recommender-system architectural pattern.)*
+A single model that applied rich per-candidate features to a corpus of millions would pay that cost millions of times per request. Step 2 priced it at about 19 million cores. The paper's two stages answer this:
 
-- **Why?** A single model that tried to apply ranking's rich, per-candidate feature set (Step 5: hundreds of features, many computed per video *and* per user-video relationship) directly against an entire "millions"-scale corpus, for every request, would have to pay that rich computation millions of times per request — a cost Step 2's QPS/latency arithmetic already shows is untenable within a tens-of-milliseconds serving budget. The paper's own stated reasoning for its two-stage split: *"The two-stage approach to recommendation allows us to make recommendations from a very large corpus (millions) of videos while still being certain that the small number of videos appearing on the device are personalized and engaging for the user."*
-- **What?** **Candidate generation** is the first stage: a model that takes a user's history and context as input and retrieves a much smaller subset (Step 2: "hundreds") of videos from the full corpus, using only **coarse** features — *"The candidate generation network only provides broad personalization via collaborative filtering. The similarity between users is expressed in terms of coarse features such as IDs of video watches, search query tokens and demographics."* **Ranking** is the second stage: a separate model that scores only that much smaller candidate set, using a far **richer** feature set describing both the video and the specific user-video relationship, and returns the final short list ("dozens") the user actually sees. Together, this two-step shape is the **two-stage retrieval-then-rank architecture**: cheap, broad narrowing first; expensive, precise scoring second, applied only to what already survived the first cut.
-- **How?** The paper states this explicitly as the reason richer features are affordable at all in the second stage: *"During ranking, we have access to many more features describing the video and the user's relationship to the video because only a few hundred videos are being scored rather than the millions scored in candidate generation."* This is the paper's own version of this capstone's titular lesson — **you can't rank what you didn't first retrieve cheaply**: ranking's affordability depends entirely on candidate generation having already done the expensive part (searching the whole corpus) using a formulation cheap enough to run at that scale, so ranking never has to.
-
-```mermaid
-flowchart LR
-    U["User history + context\n(coarse features)"] --> CG["Candidate generation\nembedding + ANN lookup"]
-    CG --> C["Candidates\n(hundreds)"]
-    C --> RK["Ranking\n(hundreds of rich features)"]
-    RK --> S["Shown\n(dozens)"]
-```
-
-### Sidebar — extreme multiclass classification and candidate sampling (sampled softmax)
-
-*(This concept has no existing Lesson home.)*
-
-- **Why?** Candidate generation's actual prediction target is "which specific video will this user watch next" — and at YouTube's corpus scale, that's a classification problem with literally millions of possible classes (one class per video), not the dozens-to-thousands of classes a typical classification problem has. Computing an ordinary softmax's normalization term — summing over *every* class in the corpus, for every single training example — would be prohibitively expensive at this scale, repeated across "hundreds of billions of examples" (Step 2) of training data.
-- **What?** **Extreme multiclass classification** is the paper's own name for exactly this shape of problem: classification where the number of classes is itself extremely large — stated formally in the paper as predicting a specific video watch `w_t` at time `t` among millions of videos `i` (classes) from a corpus `V`, given a user `U` and context `C`:
-
-  ```
-  P(w_t = i | U, C) = e^(v_i · u) / Σ_(j∈V) e^(v_j · u)
-  ```
-
-  where `u ∈ R^N` is a learned embedding of the user/context pair, and each `v_j ∈ R^N` is a learned embedding of candidate video `j` — the same embedding concept Lesson 1's Concept C1 already defines in full, applied here as a classifier's per-class weight vector rather than a retrieval key. The paper uses **both** "candidate sampling" and "sampled softmax" for this one training-time technique — not a case where one phrase is the paper's own precise term and the other is loose literature-speak layered on from outside. Its main text calls it **candidate sampling**: *"we rely on a technique to sample negative classes from the background distribution ('candidate sampling') and then correct for this sampling via importance weighting"* (cited there to Jean et al.'s 2014 neural-machine-translation work). Figure 3's own caption, describing the same mechanism, calls it the **sampled softmax**: *"In training, a cross-entropy loss is minimized with gradient descent on the output of the sampled softmax."* Mechanically, both names point at the same thing: for each training example, a manageable number of *negative* classes are sampled from the background distribution, the cross-entropy loss is computed only over the true label and those sampled negatives, and the result is corrected for the sampling bias via importance weighting.
-- **How?** The paper's own confirmed numbers: *"In practice several thousand negatives are sampled, corresponding to more than 100 times speedup over traditional softmax."* The paper also names, and explicitly rejects, the standard alternative: *"A popular alternative approach is hierarchical softmax [an approach that organizes classes into a tree and turns one classification among millions of classes into a sequence of binary decisions down the tree], but we weren't able to achieve comparable accuracy. In hierarchical softmax, traversing each node in the tree involves discriminating between sets of classes that are often unrelated, making the classification problem much more difficult and degrading performance."*
-
-**A numeric calculation that independently sanity-checks the paper's own ">100x" claim (illustrative arithmetic, anchored to the paper's own confirmed scale).** Full softmax cost per training step scales with the number of classes `V` it has to sum over; candidate sampling's cost scales instead with the number of sampled negatives `k`, which the paper describes only as "several thousand." Taking the paper's own confirmed experimental vocabulary size (Section 3.5: a 1-million-video vocabulary) as `V`, and an illustrative `k = 5,000` (within the paper's stated "several thousand" range):
-
-```
-full_softmax_relative_cost    = V = 1,000,000   (one term per class, every step)
-candidate_sampling_rel_cost   = k = 5,000        (one term per sampled negative, plus the true class)
-
-speedup = V ÷ k = 1,000,000 ÷ 5,000 = 200x
-```
-
-**200x**, computed independently from `V/k`, lands in the same order of magnitude as the paper's own stated **"more than 100x"** — a useful internal consistency check (the same kind capstone #1 ran on its 32x binarization ratio and capstone #2 ran on its 75% RAM-reduction figure), not a number the paper states outright, but one that follows mechanically from the paper's own confirmed vocabulary size and stated sampled-negative range.
-
-**The architecture itself (paper).** Candidate generation's network, inspired by continuous-bag-of-words language models: a user's watch history (a variable-length bag of video IDs) and search history (tokenized into unigrams and bigrams) are each mapped through a shared, jointly-learned embedding table and *averaged* into a fixed-width vector — averaging outperformed alternatives like summing or component-wise max. The averaged "watch vector" and "search vector" are concatenated with demographic features (geographic region and device, embedded; gender, logged-in state, and age, input directly as values normalized to [0, 1]) and the example-age feature (Step 3's Sidebar), then fed through several fully-connected ReLU layers, producing the user embedding `u` that the softmax formula above scores against every candidate video embedding `v_j`. Ranking's network (Step 5 covers it in full) shares this general embeddings-into-ReLU-tower shape but is trained on a different objective (expected watch time, not next-watch classification) against a far richer feature set.
+- Candidate generation takes the user's history and context and retrieves hundreds of videos with high precision. It gives broad personalization through collaborative filtering, and similarity between users is expressed in coarse features such as video IDs watched, search tokens and demographics.
+- Ranking assigns a score to each candidate with a rich set of features describing the video and the user's relationship to it, and sorts. It can do this because only a few hundred videos are scored *(source-confirmed)*.
 
 ```mermaid
 flowchart LR
-    WH["Watch history\n(bag of video IDs)"] --> WAVG["Shared embedding\n+ average"]
-    SH["Search history\n(unigrams/bigrams)"] --> SAVG["Shared embedding\n+ average"]
-    WAVG --> CAT["Concatenate with\ndemographics + example age"]
+    U["User history + context"] --> CG["Candidate generation\nembedding + nearest neighbors"]
+    CG --> C["Hundreds of candidates"]
+    C --> RK["Ranking\nhundreds of features"]
+    RK --> S["Dozens shown"]
+```
+
+The price is a ceiling. Ranking can only order what candidate generation retrieved, so a video missed at stage one cannot be recovered.
+
+### Sidebar: extreme multiclass classification
+
+Candidate generation predicts which video a user will watch next, among millions of classes. The paper writes this as a softmax *(source-confirmed)*:
+
+```text
+P(watch = i | user U, context C) = exp(v_i · u) ÷ sum over all videos j of exp(v_j · u)
+```
+
+Here u is a learned embedding of the user and context, and each v_j is a learned embedding of video j. The sum in the denominator runs over every video. Computing it for every example is the cost to avoid.
+
+The paper uses candidate sampling. For each example it samples negative classes from the background distribution, minimizes cross-entropy for the true label and the sampled negatives, and corrects for the sampling by importance weighting. Figure 3's caption calls the result the sampled softmax. In practice several thousand negatives are sampled, which the paper reports as more than 100 times faster than a traditional softmax.
+
+The cost per example, in the output layer alone and with 256 dimensions *(illustrative)*:
+
+```text
+full softmax over 1,000,000 videos  = 1,000,000 × 256 = 256 million MACs
+sampled, 5,000 negatives            =     5,000 × 256 =   1.28 million MACs      200× fewer
+per pass over 200 billion examples  = 5.1 × 10^19 against 2.6 × 10^17 MACs
+at 10^12 MACs/s, one accelerator    = about 593 days against 3 days
+```
+
+The paper states only "more than 100 times", so 200 is consistent with that figure and not a quotation. With a vocabulary of millions the ratio is larger.
+
+The paper also tried the popular alternative, hierarchical softmax, and did not reach comparable accuracy. Each node in the tree has to separate groups of classes that are often unrelated, which makes the problem harder and degrades performance.
+
+### The candidate generation network
+
+The design follows continuous bag of words language models *(source-confirmed)*:
+
+- Watch history is a variable-length list of video IDs, mapped through learned embeddings and averaged. Averaging performed best among several options, including sum and component-wise max.
+- Search history is tokenized into unigrams and bigrams, embedded and averaged the same way.
+- Geographic region and device are embedded. Gender, logged-in state and age enter as values normalized to between 0 and 1. Example age is added.
+- Everything is concatenated into a wide first layer, then fully connected ReLU layers produce the user embedding u.
+
+```mermaid
+flowchart LR
+    WH["Watch history\nbag of video IDs"] --> WAVG["Embed + average"]
+    SH["Search history\nunigrams and bigrams"] --> SAVG["Embed + average"]
+    WAVG --> CAT["Concatenate with demographics\nand example age"]
     SAVG --> CAT
-    CAT --> RELU["Fully-connected\nReLU layers"]
+    CAT --> RELU["ReLU layers"]
     RELU --> U["User embedding u"]
 ```
 
-**Ranking's training mechanism — weighted logistic regression, defined in full (paper, Section 4.2).** This is the mechanism Step 1 promised "Step 4 covers in depth": how ranking's objective ends up being watch-time-based rather than click-based, as a direct property of the loss function itself, not a separate post-hoc adjustment. Ranking is trained with ordinary logistic regression under cross-entropy loss, on examples that are each either positive (the impression was clicked) or negative (it wasn't) — but the paper modifies the training procedure in one specific way: *"the positive (clicked) impressions are weighted by the observed watch time on the video. Negative (unclicked) impressions all receive unit weight."* A positive impression where the user watched for a long time pulls much harder on the loss than one where the user clicked and immediately bailed; negatives all count the same regardless of anything else about them. The paper's own derivation of what this buys: with `N` total training examples, `k` of them positive, and `T_i` the watch time of the `i`-th impression, *"the odds learned by the logistic regression are `ΣT_i / (N − k)`"* — and because the fraction of positive impressions is small in practice (as it is here), *"the learned odds are approximately `E[T](1 + P)`, where `P` is the click probability and `E[T]` is the expected watch time of the impression. Since `P` is small, this product is close to `E[T]`."* In other words: the weighting scheme makes the model's learned odds a close stand-in for expected watch time itself, not for click probability. The last piece is how that gets turned into an actual watch-time estimate at serving time: *"For inference we use the exponential function `e^x` as the final activation function to produce these odds that closely estimate expected watch time."* So inference doesn't output a 0–1 click probability at all — it outputs `e^x` applied to the model's raw score, and that quantity is what approximates expected watch time, which is what the final ranked list is sorted by.
+In the experiments, 1 million videos and 1 million search tokens were embedded with 256 floats each, with at most 50 recent watches and 50 recent searches. The towers halve in width at each layer. Depth 0 is one linear layer. Depths 1 to 4 use 256; 512 then 256; 1024, 512, 256; and 2048, 1024, 512, 256 ReLU units. Adding features and depth significantly improved holdout MAP (Figure 6). Depth zero behaves like a linear factorization and performed very similarly to the matrix-factorization system it replaced.
+
+### The ranking network
+
+Ranking uses a similar network and gives each impression an independent score from logistic regression *(source-confirmed)*:
+
+- Features number in the hundreds, roughly half categorical and half continuous. The strongest describe the user's past interaction with the item and similar items, such as how many videos they watched from this channel and when they last watched one on this topic. Which sources nominated a candidate, and with what scores, are also fed in.
+- Each ID space has its own embedding, with dimension roughly proportional to the logarithm of the number of unique values. Large spaces keep only the top N by frequency in clicked impressions, and unknown values map to a zero embedding.
+- Features in the same ID space share one embedding. That improves generalization, speeds training and cuts memory.
+- A continuous feature is rescaled through its cumulative distribution to between 0 and 1, and its square and square root are fed too. Dropping the powers raised the loss by 0.2%.
+
+### Modeling expected watch time
+
+Ranking uses weighted logistic regression. The model is trained with logistic regression under cross-entropy loss, but each clicked impression is weighted by its watch time and each unclicked one by 1. With N examples, k positives and watch time T_i, the learned odds are the sum of the T_i divided by N − k. When positives are rare, this is approximately E[T] × (1 + P), where P is the click probability and E[T] the expected watch time of the impression, so it is close to E[T]. At inference the paper applies the exponential function to the model's raw score to produce these odds.
+
+A worked case *(illustrative)*: 1,000 impressions, 20 clicks, each clicked impression watched 5 minutes.
+
+```text
+sum of weights on positives = 20 × 5 = 100 minutes
+sum of weights on negatives = 980 × 1 = 980
+odds                        = 100 ÷ 980 = 0.1020
+E[T] = 100 ÷ 1,000          = 0.1000;   E[T] × (1 + P) = 0.1 × 1.02 = 0.1020
+```
+
+The output is a score in watch-minutes per impression. It is not a click probability.
 
 ```mermaid
 flowchart LR
-    IMP["Impression"] --> CLICKED{"Clicked?"}
-    CLICKED -->|"yes (positive)"| WT["Weight = observed\nwatch time T_i"]
-    CLICKED -->|"no (negative)"| UW["Weight = 1\n(unit weight)"]
-    WT --> LR["Logistic regression\n(cross-entropy loss)"]
+    IMP["Impression"] --> CL{"Clicked?"}
+    CL -->|"yes"| WT["Weight = watch time"]
+    CL -->|"no"| UW["Weight = 1"]
+    WT --> LR["Logistic regression"]
     UW --> LR
     LR --> X["Raw score x"]
-    X --> EXP["Inference: e^x"]
-    EXP --> EWT["≈ Expected watch time\n(sorts final list)"]
+    X --> EXP["exp(x) ≈ expected\nwatch time"]
 ```
 
-**The explicit trade-off: two-stage retrieval-then-rank vs. a single end-to-end ranker over the whole corpus.** A single model scoring the full corpus with ranking's rich per-candidate feature set, for every request, is the design Step 2's arithmetic already rules out on pure compute/latency grounds. The two-stage design buys affordability at a real, structural cost: **candidate generation becomes a hard ceiling on ranking's achievable recall.** No matter how good the ranking network is, it can never surface a video that candidate generation didn't already include in its "hundreds" — ranking only ever gets to choose among what survived the first cut. This is the two-stage architecture's central, unavoidable trade-off, and it's the direct, concrete version of this capstone's titular lesson: **you can't rank what you didn't first retrieve cheaply**, which also means you can't rank what you failed to retrieve *at all*.
+### Trade-offs considered
 
-**Trade-offs considered:** Candidate sampling (the paper's own confirmed choice) is a biased approximation of the true full-softmax gradient, corrected via importance weighting rather than computed exactly — but it's both faster and, per the paper's own confirmed result, more accurate in practice than hierarchical softmax's exact-but-harder optimization landscape, which is a genuinely counter-intuitive finding worth stating plainly: the "exact" alternative lost to the "approximate" one here. Splitting candidate generation's classification objective from ranking's watch-time-regression objective (Step 1) means the two networks never share one unified loss — a real complexity cost — but lets each stage's formulation be shaped around its own actual job (coarse recall at corpus scale vs. fine precision at candidate-set scale) rather than compromising on one formulation that's merely adequate at both.
+Candidate sampling is a biased approximation corrected by weighting. It was faster than a full softmax and, in the paper's account, more accurate than hierarchical softmax. Splitting the two objectives lets each stage be shaped by its own job and means no shared loss.
 
 ---
 
 ## Step 5: Serving Architecture
 
-**Candidate generation's serving path — delivering on Step 2's latency promise (paper).** The paper states the serving-time constraint directly: *"Scoring millions of items under a strict serving latency of tens of milliseconds requires an approximate scoring scheme sublinear in the number of classes."* The key enabling observation: at serving time, nobody needs the softmax's actual calibrated probabilities — only the *ranking* of candidates matters, and because `e^x` is a strictly increasing function, the video with the highest `v_j · u` dot product also has the highest softmax probability, so finding the top-N highest-probability videos reduces to finding the top-N by raw dot product **(illustrative elaboration of the paper's own stated reduction — the reasoning for *why* probabilities aren't needed, not an additional claim the paper spells out itself)**. The paper's own words: *"Since calibrated likelihoods from the softmax output layer are not needed at serving time, the scoring problem reduces to a nearest neighbor search in the dot product space for which general purpose libraries can be used... We found that A/B results were not particularly sensitive to the choice of nearest neighbor search algorithm."*
+### Candidate generation at serving time
 
-This claim is worth being precise about, since the paper is less silent on a specific technique than it might first appear. It states directly that its own classifier's approach descends from a named prior one: *"Previous systems at YouTube relied on hashing [citing Weston, Makadia & Yee's "Label Partitioning for Sublinear Ranking," ICML 2013] and the classifier described here uses a similar approach."* So the paper does point at a concrete technique family — hashing-based, sublinear-in-corpus-size scoring — that its own production system resembles. From there it makes the more general point that *"since calibrated likelihoods from the softmax output layer are not needed at serving time, the scoring problem reduces to a nearest neighbor search in the dot product space for which general purpose libraries can be used,"* and that *"A/B results were not particularly sensitive to the choice of nearest neighbor search algorithm."* Put together: the paper gestures at a technique family (a hashing-based approach its classifier resembles, then general-purpose ANN libraries more broadly) without committing to one specific algorithm as *the* production choice — a softer, more accurate claim than "the paper doesn't name any technique at all." This is still a meaningful contrast with capstone #1's Pinterest system, which confirms binarized embeddings compared via Hamming distance as its specific, named production technique. Lesson 1's Concept C2 already defines the general mechanism (a **vector database**, purpose-built for "find the k nearest vectors to this query vector," typically via an index like **HNSW**) and Lesson 5's Concept 2 already frames that storage shape as a KV/wide-column hybrid rather than a new database category — both referenced here rather than re-derived, since this paper's float-embedding-plus-dot-product retrieval is architecturally the same shape of problem capstone #1 solved with binarized embeddings and Hamming distance: two concrete techniques occupying the same "approximate nearest-neighbor search over learned embeddings" design space Lesson 1/5 already cover in full.
+The paper says scoring millions of items in tens of milliseconds requires an approximate scheme that is sublinear in the number of classes *(source-confirmed)*. Previous systems at YouTube relied on hashing, and the described classifier uses a similar approach. Calibrated probabilities are not needed at serving time, so the problem reduces to a nearest neighbor search in the dot product space, for which general purpose libraries can be used. A/B results were not particularly sensitive to the choice of algorithm.
 
-**A real, runnable sketch of the serving-time, two-stage retrieval-then-rank pipeline (illustrative — this document's own rendering of Figure 2's funnel and Figure 3/Figure 7's architectures, not the paper's own released code, which doesn't exist publicly):**
+The reduction works because exp is strictly increasing. The video with the largest dot product also has the largest softmax probability, so only the order of dot products matters.
+
+### What an exact scan costs
+
+Using the Step 2 figures, one request against 10 million float32 vectors of 256 dimensions reads 10.24 GB and does 2.56 billion MACs. At 23,148 requests a second that is 59 trillion MACs a second, about 3 times the ranking stage. Batching several requests lets one pass over the embeddings serve them all, at the cost of waiting for the batch to fill. An index that visits about 1% of the vectors would cut the work about 100 times, with a recall loss that has to be measured against the exact result *(illustrative)*.
+
+### A sketch of the funnel
+
+This sketch is for clarity and not for scale. It stands in for an approximate index with an exact dot product over every video, which is the design Step 2 priced out.
 
 ```python
 import numpy as np
 
-def generate_candidates(user_embedding: np.ndarray, video_embeddings: np.ndarray,
-                         video_ids: list[int], top_n: int = 500) -> list[int]:
-    """Candidate generation's serving-time step: an approximate nearest-neighbor
-    lookup in dot-product space (Step 5), standing in for whichever general-purpose
-    ANN library/index a real deployment would use -- the paper names the approach,
-    not a specific algorithm, and reports A/B results were insensitive to that choice.
-    user_embedding: shape (N,) -- this request's learned user/context vector `u`.
-    video_embeddings: shape (corpus_size, N) -- every candidate video's `v_j`.
-    Returns: the top_n video IDs by raw dot product (softmax probabilities are
-    never computed at serving time -- see Step 5's reduction above).
-    """
-    scores = video_embeddings @ user_embedding          # dot product per video, v_j . u
-    top_indices = np.argpartition(scores, -top_n)[-top_n:]
-    top_indices = top_indices[np.argsort(-scores[top_indices])]
-    return [video_ids[i] for i in top_indices]
+def generate_candidates(u: np.ndarray, video_vecs: np.ndarray,
+                        video_ids: list[int], top_n: int = 500) -> list[int]:
+    scores = video_vecs @ u                       # exact scan over the corpus
+    top = np.argpartition(scores, -top_n)[-top_n:]
+    top = top[np.argsort(-scores[top])]
+    return [video_ids[i] for i in top]
 
-
-def rank_candidates(user_id: int, candidate_ids: list[int],
-                     ranking_network) -> list[int]:
-    """Ranking's serving-time step (Step 5): score only the much smaller candidate
-    set with the richer feature set Step 4/5 describe, then sort by expected watch
-    time. `ranking_network` stands in for the trained weighted-logistic-regression
-    model (Step 4's architecture; Section 4.2's objective)."""
-    scored = [
-        (video_id, ranking_network.predict_expected_watch_time(user_id, video_id))
-        for video_id in candidate_ids
-    ]
+def recommend(user_id, u, video_vecs, video_ids, ranker, shown: int = 20):
+    candidates = generate_candidates(u, video_vecs, video_ids)
+    scored = [(v, ranker.expected_watch_time(user_id, v)) for v in candidates]
     scored.sort(key=lambda pair: pair[1], reverse=True)
-    return [video_id for video_id, _ in scored]
-
-
-def recommend(user_id: int, user_embedding: np.ndarray, video_embeddings: np.ndarray,
-              video_ids: list[int], ranking_network, shown: int = 20) -> list[int]:
-    """The full two-stage funnel: millions -> (candidate generation) -> hundreds
-    -> (ranking) -> dozens, matching Figure 2's architecture exactly."""
-    candidates = generate_candidates(user_embedding, video_embeddings, video_ids)
-    ranked = rank_candidates(user_id, candidates, ranking_network)
-    return ranked[:shown]
+    return [v for v, _ in scored[:shown]]
 ```
 
-```mermaid
-flowchart LR
-    UE["User embedding u"] --> ANN["ANN dot-product lookup\n(sublinear, tens of ms)"]
-    ANN --> TOP500["Top ~500 candidates"]
-    TOP500 --> FEAT["Rich per-candidate\nfeatures (hundreds)"]
-    FEAT --> WLR["Ranking: weighted\nlogistic regression"]
-    WLR --> EWT["Sort by expected\nwatch time (e^x)"]
-    EWT --> TOP20["Top ~20 shown"]
-```
+### Ranking at serving time
 
-**Ranking's own serving-time cost — a different kind of scaling problem than candidate generation's (paper).** Because ranking only ever scores the few hundred candidates that survived the first stage (Step 4's trade-off, operationalized), it can afford hundreds of features per candidate — *"We typically use hundreds of features in our ranking models, roughly split evenly between categorical and continuous."* A real, confirmed memory/parameter-sharing detail: categorical features drawn from the same underlying ID space (e.g., the impression's own video ID, the last video the user watched, the video that originally "seeded" the recommendation) **share one global embedding table**, rather than each feature learning its own separate embedding — *"categorical features in the same ID space also share underlying emeddings [sic]... Sharing embeddings is important for improving generalization, speeding up training and reducing memory requirements."* The paper quantifies how much of the model's total parameter budget this consumes: *"one million IDs embedded in a 32 dimensional space have 7 times more parameters than fully connected layers 2048 units wide"* — i.e., `1,000,000 × 32 = 32,000,000` embedding-table parameters against roughly `2048 × 2048 ≈ 4,194,304` parameters in a comparably-sized fully-connected layer, a ratio of `32,000,000 ÷ 4,194,304 ≈ 7.6x`, matching the paper's stated "7 times" **(illustrative arithmetic reproducing the paper's own confirmed ratio, the same sanity-check discipline as Step 4's 200x calculation above)**. The practical upshot: at this scale, the overwhelming majority of a model's memory footprint lives in its embedding tables, not its hidden layers.
+Because ranking scores only a few hundred videos, it can afford hundreds of features per candidate. Query features are computed once per request, and impression features once per item scored. The paper says shared embeddings matter for memory: one million IDs embedded in 32 dimensions have 7 times more parameters than fully connected layers 2,048 units wide. Check: 1,000,000 × 32 = 32,000,000 against 2,048 × 2,048 = 4,194,304, a ratio of 7.6. Most parameters sit in the embedding tables, not the hidden layers.
 
-**Real-time feature computation and "churn" (paper).** Several of ranking's most valuable features describe genuinely recent user behavior — time since the user last watched something on this topic, how many times this specific video has already been shown to this user without a watch — which the paper names as an operational requirement in its own right: *"Serving up-to-the-second impression and watch history is an engineering feat onto itself outside the scope of this paper, but is vital for producing responsive recommendations."* One concrete reason this matters: features describing recent impression frequency introduce **churn** (successive page loads don't return identical lists) — if a user was recently shown a video and didn't watch it, the model naturally demotes that video on the next request, simply because the "already shown recently, not watched" feature value changed.
+### Fresh features and churn
 
-**Trade-offs considered:** Approximate, sublinear nearest-neighbor retrieval at the candidate-generation stage buys the latency headroom Step 2's arithmetic shows is otherwise unaffordable, at the cost of not being a verified-exact top-N search — a real but, per the paper's own confirmed A/B finding, practically small cost at this corpus scale. Sharing embeddings across every feature drawn from the same ID space (video IDs, across several different feature roles) cuts memory and speeds up training and generalization, at the cost of each individual feature's representation being somewhat entangled with every other feature sharing that same table — a real but, per the paper, acceptable trade, since each feature still gets its own separate path through the network above the shared embedding layer. Serving genuinely real-time impression/watch history (rather than a periodically-refreshed snapshot) is a real infrastructure cost the paper explicitly calls out as its own engineering problem, but it's what makes the churn behavior above possible at all — a staler feature pipeline would keep re-recommending just-rejected videos until its next refresh cycle caught up.
+Features such as time since the last watch on this topic, and the number of previous impressions of this video, depend on the last few seconds. The paper calls serving up-to-the-second impression and watch history an engineering feat of its own, outside its scope, and vital for responsive recommendations. A video shown but not watched is demoted on the next page load, which creates churn: successive requests do not return identical lists. A feature pipeline that refreshed rarely would keep recommending just-rejected videos.
+
+### Decision table
+
+| Decision | This system's choice | Choose differently when |
+|---|---|---|
+| Retrieval | Approximate nearest neighbors in dot product space | An exact scan if the corpus is small enough to fit the budget |
+| Stages | Retrieve cheaply, rank a few hundred | A single stage if the corpus is thousands, not millions |
+| Candidate set size | Hundreds | Larger if recall at stage one is the measured limit and ranking CPU allows |
+| Ranking objective | Expected watch time per impression | Click probability if clickbait is not a problem and completion is not the goal |
+| Embeddings | Shared across features in one ID space | Separate if features must not influence each other |
+| Feature freshness | Up to the second for impression and watch history | Periodic if churn is not wanted |
+
+### Trade-offs considered
+
+Approximate retrieval buys latency and gives up exactness. The paper found A/B results insensitive to the algorithm. Sharing embeddings cuts memory and entangles a table across feature roles, and each feature still has its own path above it. Real-time history is expensive and is what makes churn possible.
 
 ---
 
-## Step 6: Evaluation, Monitoring, and Iteration
+## Step 6: Evaluation, Monitoring and Iteration
 
-**Offline evaluation — used during development, explicitly not trusted as the final word (paper).** The two stages track different offline metrics:
-- **Candidate generation — Holdout MAP** (Mean Average Precision — a standard information-retrieval metric averaging precision across a ranked list of results, evaluated here against held-out next-watch labels): used across the depth/feature experiments of Section 3.5, where adding search history and demographic features on top of watch-history-only, and adding network depth, each measurably improved Holdout MAP (paper's Figure 6; the paper doesn't publish the exact percentage values in the text itself beyond the figure, so this document doesn't restate specific numbers it can't directly confirm from the prose).
-- **Ranking — weighted, per-user loss:** defined precisely by the paper as the fraction of total held-out watch time that gets "mispredicted" (a negative, unclicked impression scored higher than a positive, clicked one, within the same user's single page of results). The paper's own confirmed Table 1 shows this loss falling steadily with both width and depth, from **41.6%** with no hidden layers down to **34.6%** with the chosen 1024→512→256-ReLU "tower" configuration — the specific configuration the paper reports choosing *because* it gave the best results "while enabling us to stay within our serving CPU budget," an explicit accuracy-vs-serving-cost trade-off named directly in the paper's own text, not inferred.
+### Offline metrics
 
-**Why offline metrics aren't the final arbiter (paper) — the evaluation-philosophy point this capstone is built to teach.** The paper states its policy directly, in Section 2: *"During development, we make extensive use of offline metrics (precision, recall, ranking loss, etc.) to guide iterative improvements to our system. However for the final determination of the effectiveness of an algorithm or model, we rely on A/B testing via live experiments... This is important because live A/B results are not always correlated with offline experiments."* This isn't a throwaway caveat — the paper names a concrete instance where it mattered directly: the choice between predicting a randomly-held-out watch versus predicting the user's *next* watch (Step 3) is, in the paper's own words, *"very difficult to measure with offline experiments"* despite having "an outsized importance on performance in A/B testing." A design decision that looks nearly indistinguishable offline turned out to matter enormously once it reached real users — exactly the gap this evaluation policy exists to catch.
+The two stages are scored differently *(source-confirmed)*:
 
-**A concrete payoff of this policy, tied directly back to Step 3's trick (paper).** The example-age feature (Step 3's Sidebar) wasn't just validated by Figure 4's offline curve-fitting demonstration — the paper's own conclusion states its real-world impact: *"This improved offline holdout precision results and increased the watch time dramatically on recently uploaded videos in A/B testing."* The offline result (a better-fitting popularity curve) and the online result (a dramatic watch-time increase specifically on fresh content) are two separate, both paper-confirmed, pieces of evidence — consistent with each other here, though the paper's own general policy above is explicit that this alignment isn't guaranteed.
+- Candidate generation uses holdout mean average precision (MAP). The paper shows it only in Figure 6, where adding search history, demographics and example age, and adding depth, each improved it. The text gives no values.
+- Ranking uses a weighted, per-user loss. For one user's page with a clicked and an unclicked impression, if the unclicked one scores higher, the clicked impression's watch time counts as mispredicted. The loss is the mispredicted watch time as a share of total watch time over held-out pairs, on next-day data.
 
-**The feedback loop back into Step 3:** every new watch (and every new search) becomes training signal for the next training cycle, over the paper's confirmed several-weeks training window; every newly-uploaded video becomes reachable by collaborative filtering only once that cycle has ingested watches of it; and the up-to-the-second impression/watch-history serving path (Step 5) feeds ranking's churn-sensitive features continuously, not just at training time.
+| Hidden layers in ranking | Weighted per-user loss |
+|---|---|
+| None | 41.6% |
+| 256 ReLU | 36.9% |
+| 512 ReLU | 36.7% |
+| 1024 ReLU | 35.8% |
+| 512 then 256 | 35.2% |
+| 1024 then 512 | 34.7% |
+| 1024, 512, 256 | 34.6% |
 
-**Failure modes that show up only at scale:**
-- The Taylor-Swift-search overfitting failure (Step 3): the paper's own named example of a model exploiting the surrogate problem's structure rather than learning the real preference signal — a labeling/feature-construction problem, not a model-capacity one, so no amount of added depth would fix it.
-- A CTR-optimized ranking objective, named directly by the paper as a systematic failure mode (clickbait promotion) — the entire reason ranking's objective is watch-time-based instead (Step 1, Step 4).
-- Candidate generation's recall ceiling (Step 4's trade-off): any failure to retrieve a genuinely great recommendation at the first stage is permanently unrecoverable by ranking, no matter how well-tuned ranking's objective is.
+The last configuration gave the best result while staying within the serving CPU budget, which is an accuracy against cost trade-off the paper names. Two ablations on that tower: feeding continuous features without their powers raised the loss by 0.2%, and weighting positives and negatives equally raised it by a dramatic 4.1%. The first row to the last is a fall of 7.0 points, 16.8% in relative terms.
 
-**Trade-offs considered:** Relying on live A/B testing as the final word, rather than trusting offline Holdout MAP/weighted-loss numbers alone, is slower and costs real user exposure to every candidate change before it's confirmed to help — but it's the paper's own explicit, stated policy specifically because offline and online results can diverge, and a cheaper-but-wrong offline-only verdict would have missed the next-watch-vs-random-holdout finding above entirely. Offline metrics remain genuinely useful for fast iteration during development (the paper leans on them throughout Section 3.5's and Section 4.3's depth experiments) — the trade-off isn't "offline metrics are useless," it's "offline metrics guide the search, live A/B testing decides what ships," a two-tier evaluation discipline, not a single-metric one.
+### Why offline is not the last word
+
+The paper states its policy. Offline metrics guide development, and the final determination of effectiveness is by live A/B tests, because live results are not always correlated with offline ones. In a live test it can measure click-through, watch time and other engagement metrics. The next-watch against random-holdout choice is its example: nearly invisible offline and large online.
+
+The example-age feature shows both kinds of evidence agreeing in this case: a better-fitting curve offline and a dramatic watch-time increase on recent uploads online. The paper's own policy says agreement is not guaranteed.
+
+### Failure modes
+
+- A model that overfits the surrogate problem, such as reproducing the last search page. More depth does not fix it. Withholding information does.
+- A click-optimized ranker that promotes clickbait.
+- Retrieval misses. A video absent from the candidates cannot be ranked.
+- A stale model with example age set to zero, which quietly understates freshness.
+
+### What breaks first at 10×
+
+| Quantity | At 10× | Reason |
+|---|---|---|
+| Requests | 231,481/s average | Scales with users and loads |
+| Ranking CPU | About 9,700 cores on average | One ranking pass per candidate per request |
+| Retrieval, exact scan | About 590 trillion MACs/s | Scales with requests, and with the corpus if it grows |
+| Embedding memory | Grows with the vocabulary | Depends on the number of videos and tokens, not on traffic |
+| Freshness | Same demand per upload | The upload rate, not user traffic, drives it |
+
+The figures follow the Step 2 assumptions. Ranking and retrieval cost scale with requests and yield to machines up to a point. An approximate index and a cap on candidates are design levers that cut the cost per request.
+
+### Risks the paper does not discuss
+
+- Length bias from a watch-time weight, as in Step 1. Slice results by video length.
+- Feedback loops: what is recommended shapes what is watched, which shapes the next training set. Training on all watches softens this.
+- Content that is popular and not good for the user. Watch time is a proxy.
+
+### Trade-offs considered
+
+Live A/B tests are slower and expose users to every candidate change, and the paper chose them because offline numbers can mislead. Offline metrics still guide fast iteration. The rule is that offline numbers steer the search and live tests decide what ships.
 
 ---
 
-## Source(s) and Further Reading
+## Sources and Further Reading
 
-- Covington, Adams, Sargin, *"Deep Neural Networks for YouTube Recommendations,"* RecSys 2016 (ACM DOI 10.1145/2959100.2959190) — **primary**; the source of every figure, formula, architectural detail, and quoted claim in this document tagged (paper), including the two-stage system overview, the extreme-multiclass-classification formulation and candidate-sampling/hierarchical-softmax comparison, the example-age feature and Figure 4's empirical validation, the label/context-selection findings (Figure 5), the weighted-logistic-regression expected-watch-time objective, Table 1's depth/width results, the shared-embedding parameter-count figure, and the paper's own stated offline-vs-live-A/B evaluation policy.
-- Lesson 1 (`lessons/lesson-1-ai-fundamentals-refresher.md`), Concepts C1 and C2 — the original full definitions of embeddings, cosine similarity, vector databases, and HNSW, referenced in Step 4/Step 5 rather than re-derived.
-- Lesson 5 (`lessons/lesson-5-data-layer.md`), Concept 2 — the KV/wide-column-hybrid framing of a vector-shaped store, referenced in Step 5 rather than re-derived.
-- `case-studies/visual-search/README.md` (capstone #1) — the closest structural analog in this repo: another embedding-retrieval recommendation-adjacent system with a confirmed primary paper, referenced in Step 5 for the contrast between its binarized-embedding/Hamming-distance approach and this paper's float-embedding/dot-product approach to the same underlying "approximate nearest-neighbor search over learned embeddings" problem.
-- `case-studies/ctr-prediction/README.md` (capstone #2) — same six-step method, same ML-ranking-adjacent territory; referenced in Step 1 for the structural parallel between implicit watch-completion labels here and implicit click/no-click labels there, both proxies for a feedback signal the system never measures directly.
-- `appendix/glossary.md` — new entries added for **candidate generation / two-stage retrieval-then-rank**, **extreme multiclass classification / candidate sampling (sampled softmax)**, and **example age**; this capstone defines all three in full on first use above rather than assuming familiarity. **Implicit feedback** (Step 1) and **weighted logistic regression** (Step 4, Section 4.2's mechanism: watch-time-weighted positive impressions against unit-weight negatives, and the exponential-activation inference step that recovers an expected-watch-time estimate) are also defined in full on first use, but, as a judgment call, were not given their own boxed Sidebar or glossary entry — both are standard ML-evaluation/data-labeling vocabulary explained inline the same way capstone #1 inline-defined precision@k and Hamming distance, rather than genuinely new, reusable architectural techniques in the way the three Sidebar'd concepts above are.
+- Covington, Adams and Sargin, "Deep Neural Networks for YouTube Recommendations," RecSys 2016 (DOI 10.1145/2959100.2959190). The primary source for every figure, formula and quotation marked source-confirmed.
+- [Lesson 1](../../lessons/lesson-1-ai-fundamentals-refresher.md), Group C: embeddings, vector databases and nearest-neighbor search.
+- [Lesson 5](../../lessons/lesson-5-data-layer.md), Concept 2: the storage shape of a vector-keyed store.
+- [Capstone #1, Visual Search](../visual-search/README.md): the same retrieval problem solved with binary codes and Hamming distance.
+- [Capstone #2, CTR Prediction](../ctr-prediction/README.md): implicit labels and calibration for a different ranking problem.
+- [Glossary](../../appendix/glossary.md): two-stage retrieval, extreme multiclass classification with candidate sampling, example age.
+
+Labels: *(source-confirmed)* is in the paper. *(illustrative)* is a planning assumption of this document.

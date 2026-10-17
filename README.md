@@ -34,32 +34,35 @@ Each lesson has a matching checkpoint — a short self-check, not a graded test 
 
 ## 🧩 Case studies
 
-On top of the 11 lessons, there are **14 worked SysDesign case studies** — full system designs covering constraints, back-of-envelope math, architecture, and explicit trade-offs, with every real-world claim tagged by how confident the sourcing is. Each one pulls together concepts from several lessons at once, the way a real design actually would.
+On top of the 11 lessons, there are **14 worked SysDesign case studies** — full system designs covering constraints, back-of-envelope math, architecture, and explicit trade-offs. Each one pulls together concepts from several lessons at once, the way a real design actually would. Every real-world claim is labelled either *(source-confirmed)*, checked against a named primary source, or *(illustrative)*, this document's own planning assumption; figures are re-derived from the sources, and nothing is run on a live system.
 
-| # | Case study | What it's based on |
-|---|---|---|
-| 1 | [Visual Search](case-studies/visual-search/README.md) | Pinterest's unified embedding search (Flashlight / Lens / Shop-the-Look) |
-| 2 | [Ad Click-Through-Rate Prediction](case-studies/ctr-prediction/README.md) | Google's "View from the Trenches" |
-| 3 | [Video Recommendation](case-studies/video-recommendation/README.md) | YouTube's candidate generation + ranking split |
-| 4 | [Search Ranking](case-studies/airbnb-search-ranking/README.md) | Airbnb's listing search (GBDT → neural ranker) |
-| 5 / 11 | [Harmful Content Detection & AI Content Moderation](case-studies/harmful-content-detection/README.md) | OpenAI's holistic undesired-content-detection system |
-| 6 | [Friend/Connection Recommendation](case-studies/pymk-friend-recommendation/README.md) | LinkedIn's "People You May Know" |
-| 7 | [ETA / Arrival-Time Prediction](case-studies/uber-eta-prediction/README.md) | Uber's DeepETA |
-| 8 | [Personalized Feed Ranking](case-studies/netflix-feed-ranking/README.md) | Netflix's row ranking |
-| 9 | [RAG System Design](case-studies/rag-contextual-retrieval/README.md) | Enterprise knowledge-base chatbot (Anthropic's Contextual Retrieval) |
-| 10 | [LLM Inference Serving at Scale](case-studies/llm-inference-serving/README.md) | Production LLM serving infrastructure |
-| 12 | [Multi-Agent Customer-Support Platform](case-studies/multi-agent-customer-support/README.md) | Sierra AI's architecture and OpenAI's Klarna customer story |
-| 13 | [Autonomous Coding Agent](case-studies/autonomous-coding-agent/README.md) | Devin-style plan-and-execute software engineering |
-| 14 | [Computer-Use / Browser Agent](case-studies/computer-use-agent/README.md) | The screenshot-reasoning-action loop vs. a direct-API agent |
-| 15 | [LLM API Gateway](case-studies/llm-api-gateway/README.md) | Provider-agnostic routing by cost, latency, and quality |
+Each case study also ships **two practice PDFs** in [`capstone-study-and-mock/`](capstone-study-and-mock/): a **Study edition** — scenario questions with layered follow-ups and worked, how-to-think answers — and a **Mock interview** — the same scenarios, numbered identically, with the answers removed. They are linked per row below.
 
-They're worth doing both as you go — once a case study uses a concept you just learned — and again after Lesson 11, once you have everything to draw on.
+| # | Case study | What it's based on | Practice |
+|---|---|---|---|
+| 1 | [Visual Search](case-studies/visual-search/README.md) | Pinterest's unified embedding search (Flashlight / Lens / Shop-the-Look) | [Study](capstone-study-and-mock/visual-search/capstone1_visual_search_study.pdf) · [Mock](capstone-study-and-mock/visual-search/capstone1_visual_search_mock.pdf) |
+| 2 | [Ad Click-Through-Rate Prediction](case-studies/ctr-prediction/README.md) | Google's "View from the Trenches" | [Study](capstone-study-and-mock/ctr-prediction/capstone2_ctr_prediction_study.pdf) · [Mock](capstone-study-and-mock/ctr-prediction/capstone2_ctr_prediction_mock.pdf) |
+| 3 | [Video Recommendation](case-studies/video-recommendation/README.md) | YouTube's candidate generation + ranking split | [Study](capstone-study-and-mock/video-recommendation/capstone3_video_recommendation_study.pdf) · [Mock](capstone-study-and-mock/video-recommendation/capstone3_video_recommendation_mock.pdf) |
+| 4 | [Search Ranking](case-studies/airbnb-search-ranking/README.md) | Airbnb's listing search (GBDT → neural ranker) | [Study](capstone-study-and-mock/airbnb-search-ranking/capstone4_airbnb_search_ranking_study.pdf) · [Mock](capstone-study-and-mock/airbnb-search-ranking/capstone4_airbnb_search_ranking_mock.pdf) |
+| 5 / 11 | [Harmful Content Detection & AI Content Moderation](case-studies/harmful-content-detection/README.md) | OpenAI's holistic undesired-content-detection system | [Study](capstone-study-and-mock/harmful-content-detection/capstone5_harmful_content_detection_study.pdf) · [Mock](capstone-study-and-mock/harmful-content-detection/capstone5_harmful_content_detection_mock.pdf) |
+| 6 | [Friend/Connection Recommendation](case-studies/pymk-friend-recommendation/README.md) | LinkedIn's "People You May Know" | [Study](capstone-study-and-mock/pymk-friend-recommendation/capstone6_pymk_friend_recommendation_study.pdf) · [Mock](capstone-study-and-mock/pymk-friend-recommendation/capstone6_pymk_friend_recommendation_mock.pdf) |
+| 7 | [ETA / Arrival-Time Prediction](case-studies/uber-eta-prediction/README.md) | Uber's DeepETA | [Study](capstone-study-and-mock/uber-eta-prediction/capstone7_uber_eta_prediction_study.pdf) · [Mock](capstone-study-and-mock/uber-eta-prediction/capstone7_uber_eta_prediction_mock.pdf) |
+| 8 | [Personalized Feed Ranking](case-studies/netflix-feed-ranking/README.md) | Netflix's row ranking | [Study](capstone-study-and-mock/netflix-feed-ranking/capstone8_netflix_feed_ranking_study.pdf) · [Mock](capstone-study-and-mock/netflix-feed-ranking/capstone8_netflix_feed_ranking_mock.pdf) |
+| 9 | [RAG System Design](case-studies/rag-contextual-retrieval/README.md) | Enterprise knowledge-base chatbot (Anthropic's Contextual Retrieval) | [Study](capstone-study-and-mock/rag-contextual-retrieval/capstone9_rag_contextual_retrieval_study.pdf) · [Mock](capstone-study-and-mock/rag-contextual-retrieval/capstone9_rag_contextual_retrieval_mock.pdf) |
+| 10 | [LLM Inference Serving at Scale](case-studies/llm-inference-serving/README.md) | Production LLM serving infrastructure | [Study](capstone-study-and-mock/llm-inference-serving/capstone10_llm_inference_serving_study.pdf) · [Mock](capstone-study-and-mock/llm-inference-serving/capstone10_llm_inference_serving_mock.pdf) |
+| 12 | [Multi-Agent Customer-Support Platform](case-studies/multi-agent-customer-support/README.md) | Sierra's supervisor architecture and Klarna's AI assistant | [Study](capstone-study-and-mock/multi-agent-customer-support/capstone12_multi_agent_customer_support_study.pdf) · [Mock](capstone-study-and-mock/multi-agent-customer-support/capstone12_multi_agent_customer_support_mock.pdf) |
+| 13 | [Autonomous Coding Agent](case-studies/autonomous-coding-agent/README.md) | Devin-style plan-and-execute software engineering | [Study](capstone-study-and-mock/autonomous-coding-agent/capstone13_autonomous_coding_agent_study.pdf) · [Mock](capstone-study-and-mock/autonomous-coding-agent/capstone13_autonomous_coding_agent_mock.pdf) |
+| 14 | [Computer-Use / Browser Agent](case-studies/computer-use-agent/README.md) | The screenshot-reasoning-action loop vs. a direct-API agent | [Study](capstone-study-and-mock/computer-use-agent/capstone14_computer_use_agent_study.pdf) · [Mock](capstone-study-and-mock/computer-use-agent/capstone14_computer_use_agent_mock.pdf) |
+| 15 | [LLM API Gateway](case-studies/llm-api-gateway/README.md) | Provider-agnostic routing by cost, latency, and quality | [Study](capstone-study-and-mock/llm-api-gateway/capstone15_llm_api_gateway_study.pdf) · [Mock](capstone-study-and-mock/llm-api-gateway/capstone15_llm_api_gateway_mock.pdf) |
+
+They're worth doing both as you go — once a case study uses a concept you just learned — and again after Lesson 11, once you have everything to draw on. Read the case study's README first, then take the Study edition, then sit the Mock with the answers closed.
 
 ## 🗂️ Structure
 
 - **[`lessons/`](lessons/)** — the 11 lessons, numbered in reading order
 - **[`checkpoints/`](checkpoints/)** — one self-check per lesson, same numbering
 - **[`case-studies/`](case-studies/)** — 14 worked system designs, the "put it all together" exercises
+- **[`capstone-study-and-mock/`](capstone-study-and-mock/)** — a Study edition and a Mock interview PDF for each of the 14 case studies, in the interview-playbook style
 - **[`appendix/`](appendix/)** — flip-back reference material: a [glossary](appendix/glossary.md) of every term used across the course, and a [table of real-world latency/token numbers](appendix/token-and-latency-numbers.md) for sanity-checking estimates
 
 ## 🧭 How to work through it
