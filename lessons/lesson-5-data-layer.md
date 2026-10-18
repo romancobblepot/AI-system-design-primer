@@ -27,62 +27,91 @@ Most applications start with an **RDBMS** (Relational Database Management System
 - **Isolation** — concurrent transactions don't see each other's uncommitted state.
 - **Durability** — once a transaction commits, it survives a crash.
 
-This works well until one server's reads, writes, or total data volume outgrow what a single machine can hold or serve. That's not a "SQL is slow" problem — it's a hardware ceiling: one node has a hard limit on CPU, memory, disk I/O, and storage.
+This works well until one server's reads, writes, or total data volume outgrow what a single machine can hold or serve.
 
-Pinterest's embedding index (capstone #1) and LinkedIn's connection graph (capstone #6) are both this same problem under an AI-specific framing: a dataset and query rate that outgrew what any single RDBMS node could serve, forcing a choice among the techniques below.
+- That isn't a "SQL is slow" problem. It is a hardware ceiling: one node has a hard limit on CPU, memory, disk I/O, and storage.
+- Pinterest's embedding index (capstone #1) and LinkedIn's connection graph (capstone #6) are both this same problem under an AI-specific framing. A dataset and query rate outgrew any single RDBMS node, forcing a choice among the techniques below.
 
 ### What?
 
-Five classic techniques, usually combined rather than used in isolation:
+Five classic techniques, usually combined rather than used in isolation.
 
-- **Replication** — keep more than one live copy of the database on separate nodes. The common pattern, **master-slave replication**: one node (the "master," or "primary") accepts all writes; one or more **read replicas** receive a continuous copy of those writes and serve read-only queries, spreading read traffic across many nodes while writes still funnel through the single primary.
+**1. Replication** — keep more than one live copy of the database on separate nodes.
 
-  **Replication lag** is the delay between a write committing on the primary and that write becoming visible on a given replica. It's similar to a group chat: one person posts the official update, but everyone else's phone has to sync before they see it — for a moment, different readers see different "latest" states. That lag, being real and variable, is exactly why a replica is, by construction, an eventually consistent copy of the primary (Lesson 3's Concept I2 defined eventual consistency; replication lag is the mechanism that produces it here).
+- **Master-slave replication** is the common pattern.
+  - One node (the "master" or "primary") accepts all writes.
+  - One or more **read replicas** receive a continuous copy of those writes and serve read-only queries.
+  - Reads spread across many nodes, while writes still funnel through the one primary.
+- **Replication lag** is the delay between a write committing on the primary and becoming visible on a given replica.
+  - Think of a group chat: one person posts the official update, but everyone else's phone has to sync, so for a moment readers see different "latest" states.
+  - Because lag is real and variable, a replica is by construction an eventually consistent copy of the primary. (Lesson 3's Concept I2 defined eventual consistency; lag is the mechanism that produces it here.)
+- **Master-master replication** (less common) lets more than one node accept writes.
+  - It removes the single-primary write bottleneck.
+  - It needs a conflict-resolution strategy for when two masters accept conflicting writes to the same row before either hears about the other's.
 
-  A less common alternative, **master-master replication**, lets more than one node accept writes directly — removing the single-primary write bottleneck, but requiring a conflict-resolution strategy for when two masters accept conflicting writes to the same row before either has heard about the other's.
+Master-slave replication's write/read split:
 
-  Visualizing master-slave replication's write/read split:
+```mermaid
+flowchart LR
+    APP["Application"] -->|writes| M["Primary (master) node"]
+    APP -->|reads| R1["Read replica 1"]
+    APP -->|reads| R2["Read replica 2"]
+    M -->|"continuous copy of writes\n(replication lag)"| R1
+    M -->|"continuous copy of writes\n(replication lag)"| R2
+```
 
-  ```mermaid
-  flowchart LR
-      APP["Application"] -->|writes| M["Primary (master) node"]
-      APP -->|reads| R1["Read replica 1"]
-      APP -->|reads| R2["Read replica 2"]
-      M -->|"continuous copy of writes\n(replication lag)"| R1
-      M -->|"continuous copy of writes\n(replication lag)"| R2
-  ```
+**2. Federation** (also **functional partitioning**) — split one database into several separate databases along domain lines.
 
-- **Federation** (also called **functional partitioning**) — split one database into several separate databases along domain lines (e.g., a `users` database and a separate `products` database, each with its own full schema, instead of all tables living in one database). Think of splitting one general store into separate specialty shops — a bakery, a hardware store — instead of cramming everything under one roof: each shop gets more room and more of its own staff's attention, but a shopping list that spans both now means two separate trips instead of one. That extra trip is the cost here, and it lands on the application: a foreign-key relationship or JOIN that used to span two tables in one database now has to be resolved in application code across two separate database connections, since the database engine itself has no visibility across that boundary.
+- E.g. a `users` database and a separate `products` database, each with its own full schema.
+- Think of splitting one general store into specialty shops, a bakery and a hardware store. Each gets more room and more of its own staff's attention, but a shopping list spanning both now means two trips.
+- That extra trip lands on the application. A foreign key or JOIN that used to span two tables in one database must now be resolved in application code across two separate database connections, because the engine has no visibility across that boundary.
 
-- **Sharding** (also called **horizontal partitioning**) — split the rows of a single logical table across multiple physical database nodes (**shards**), each holding a disjoint subset of rows, usually selected by a **shard key** (the column, or a function of it, that decides which shard a given row belongs on — e.g., `user_id % N`, or a hash of `user_id`).
+**3. Sharding** (also **horizontal partitioning**) — split the rows of a single logical table across multiple physical nodes (**shards**), each holding a disjoint subset.
 
-  A plain-language way to see it: imagine splitting a phone book into separate volumes by last-name range. Each volume is smaller and faster to search — but if you need everyone born in 1990, scattered across every volume, you now have to search all of them. That's a **cross-shard query**, and it's the main cost of sharding: unlike federation (which splits by table/domain), sharding splits *within* one table, scaling a single hot table's reads *and* writes across many nodes — but any query needing rows from more than one shard now has to be assembled by the application from multiple shard round-trips instead of one SQL query.
+- Rows are usually assigned by a **shard key**: the column, or a function of it, that decides which shard a row belongs on (e.g. `user_id % N`, or a hash of `user_id`).
+- Think of splitting a phone book into volumes by last-name range. Each volume is smaller and faster to search, but "everyone born in 1990" is scattered across every volume, so you search all of them.
+  - That is a **cross-shard query**, and it is the main cost of sharding.
+- Federation splits by table/domain. Sharding splits *within* one table, scaling a single hot table's reads *and* writes across many nodes.
+  - Any query needing rows from more than one shard must be assembled by the application from multiple round trips instead of one SQL query.
+- A naive modulo shard key (`id % N`) adds a cost: changing N (adding or removing a shard) changes almost every row's target shard, forcing a massive reshuffle.
+- **Consistent hashing** avoids that.
+  - It maps both data items and nodes onto points on a circular hash space (a "ring").
+  - Adding or removing one node only remaps the small slice of keys near it on the ring.
+  - The price is slightly more complex routing than a plain modulo.
 
-  A naive modulo-based shard key (`id % N`) adds a further cost: changing `N` (adding or removing a shard) changes almost every row's target shard, forcing a massive data reshuffle. **Consistent hashing** — mapping both data items and nodes onto points on a circular hash space (a "ring"), so adding or removing one node only remaps the small slice of keys that land near it on the ring — exists specifically to avoid that reshuffle cost, at the price of slightly more complex routing logic than a plain modulo.
+How a shard key routes rows across nodes, and why a spanning query becomes a cross-shard query:
 
-  Visualizing how a shard key routes rows across nodes, and why a query spanning them becomes a cross-shard query:
+```mermaid
+flowchart LR
+    APP["Application"] -->|"shard_key = user_id % N"| ROUTER["Shard router"]
+    ROUTER --> S0["Shard 0\n(user_id % N == 0)"]
+    ROUTER --> S1["Shard 1\n(user_id % N == 1)"]
+    ROUTER --> SN["Shard N-1"]
+    APP -.->|"cross-shard query\n(e.g. everyone born in 1990)"| S0
+    APP -.-> S1
+    APP -.-> SN
+```
 
-  ```mermaid
-  flowchart LR
-      APP["Application"] -->|"shard_key = user_id % N"| ROUTER["Shard router"]
-      ROUTER --> S0["Shard 0\n(user_id % N == 0)"]
-      ROUTER --> S1["Shard 1\n(user_id % N == 1)"]
-      ROUTER --> SN["Shard N-1"]
-      APP -.->|"cross-shard query\n(e.g. everyone born in 1990)"| S0
-      APP -.-> S1
-      APP -.-> SN
-  ```
+**4. Denormalization** — deliberately duplicate data across tables (or embed a related record's fields into a referencing row) to avoid an expensive JOIN at read time.
 
-- **Denormalization** — deliberately duplicate data across tables (or embed a related record's fields directly into a row that references it) specifically to avoid an expensive JOIN at read time. It's like writing a friend's number on a sticky note by your phone instead of looking it up in your contacts app every time: faster to check, but if your friend gets a new number and you forget to update the note, you're dialing the wrong one. Same trade in a database — denormalization speeds up the read that would otherwise need the join, at the cost of extra storage and the obligation (now on the application, or on database triggers) to keep every duplicated copy consistent whenever the original is updated. Skip that obligation and the duplicates silently drift out of sync.
+- Think of writing a friend's number on a sticky note by your phone instead of opening contacts every time. Faster, but if they change numbers and you forget the note, you dial the wrong one.
+- Benefit: faster reads for the path that would need the join.
+- Cost: extra storage, and the obligation (on the application, or database triggers) to keep every copy consistent when the original changes. Skip it and the duplicates silently drift apart.
 
-- **SQL tuning** — making a single node's own queries more efficient without changing the topology above it:
-  - An **index**: an auxiliary, separately-maintained lookup structure (commonly a B-tree) that lets the database find matching rows by a column's value without scanning every row — at the cost of extra storage and slightly slower writes, since the index itself has to be updated too.
-  - Query rewriting, so queries actually use indexes that already exist — filtering on a non-indexed expression derived from a column, rather than the column itself, often can't use an index that's sitting right there.
-  - **Connection pooling**: maintaining a fixed pool of already-open database connections that application threads borrow and return, instead of opening a new one per request — avoiding the real, measurable overhead (mostly the TCP handshake and per-connection authentication) of opening a connection each time.
+**5. SQL tuning** — make a single node's own queries more efficient without changing the topology.
+
+- An **index**: an auxiliary, separately maintained lookup structure (commonly a B-tree) that finds matching rows by a column's value without scanning every row.
+  - Cost: extra storage and slightly slower writes, since the index must be updated too.
+- **Query rewriting**, so queries actually use indexes that already exist.
+  - Filtering on an expression derived from a column, rather than the column itself, often can't use an index sitting right there.
+- **Connection pooling**: a fixed pool of already-open database connections that application threads borrow and return.
+  - It avoids the measurable overhead of opening one per request (mostly the TCP handshake and per-connection authentication).
 
 ### How?
 
-**Worked example — read-replica QPS headroom.** A primary database node sustains 2,000 writes/sec at its write-capacity ceiling. The application's read load has grown to 45,000 reads/sec — far more than one node can serve. Benchmarking shows one read replica, on this hardware, saturates at 9,000 reads/sec.
+**Worked example — read-replica QPS headroom.**
+
+A primary sustains 2,000 writes/sec at its write-capacity ceiling. Read load has grown to 45,000 reads/sec. One read replica on this hardware saturates at 9,000 reads/sec.
 
 ```
 replicas_needed (bare minimum) = ceil(45,000 reads/sec / 9,000 reads/sec per replica)
@@ -91,7 +120,7 @@ replicas_needed (bare minimum) = ceil(45,000 reads/sec / 9,000 reads/sec per rep
 total capacity at 5 replicas    = 5 × 9,000 = 45,000 reads/sec   (exactly at the ceiling, zero headroom)
 ```
 
-Running at exactly 100% of measured capacity means any traffic spike at all pushes requests into a queue and inflates latency — so a real deployment targets some headroom, e.g., 20%:
+Running at exactly 100% of measured capacity means any spike queues requests and inflates latency. A real deployment targets headroom, e.g. 20%:
 
 ```
 required_capacity_with_20%_headroom = 45,000 × 1.20 = 54,000 reads/sec
@@ -99,21 +128,67 @@ replicas_needed_with_headroom       = ceil(54,000 / 9,000) = 6 replicas
 total capacity at 6 replicas        = 6 × 9,000 = 54,000 reads/sec  (20% headroom over current peak load)
 ```
 
-Going from 5 to 6 replicas is the concrete cost of that 20% safety margin: one extra node, so a traffic spike doesn't immediately saturate every replica at once.
+Going from 5 to 6 replicas is the concrete cost of that 20% safety margin: one extra node.
 
 **Trade-offs considered:**
 
-- Replication scales reads cheaply, and each replica can fail independently without taking down the whole read path — but every replica reintroduces Lesson 3's Concept I2 consistency question: a read served by a lagging replica can return data that's milliseconds-to-seconds stale, and the application has to decide whether that's acceptable, or force a read from the primary instead.
-- Federation avoids one node holding every domain's traffic, but gives up database-enforced referential integrity across the federation boundary.
-- Sharding scales both reads and writes, not just reads, but makes any cross-shard query expensive and makes resharding itself a real operational project unless consistent hashing was chosen from the start.
-- Denormalization is a pure read-speed win that's paid for entirely in write complexity and consistency risk.
+- **Replication**
+  - Scales reads cheaply, and each replica fails independently.
+  - Every replica reintroduces Lesson 3's Concept I2 question: a lagging replica can return data milliseconds-to-seconds stale, so the application must accept that or force a read from the primary.
+- **Federation:** avoids one node holding every domain's traffic, but gives up database-enforced referential integrity across the boundary.
+- **Sharding**
+  - Scales both reads and writes, not just reads.
+  - Makes cross-shard queries expensive.
+  - Makes resharding a real operational project unless consistent hashing was chosen from the start.
+- **Denormalization:** a pure read-speed win paid for entirely in write complexity and consistency risk.
+- None of the five is "the" answer. Production systems at this scale combine several, e.g. a sharded, replicated primary dataset with selective denormalization for the hottest read paths.
 
-None of the five is "the" answer — production systems at this scale typically combine several (e.g., a sharded, replicated primary dataset with selective denormalization for the hottest read paths).
+**Situation to reason through:**
+
+- The pins service peaks at 1,900 writes/sec on a primary that tops out at 2,000. Reads are comfortably served by replicas.
+- Launch plans double write traffic next quarter. The table is heading to 2 billion rows of about 300 bytes.
+- A manager says "just add more read replicas".
+
+<details>
+<summary><b>Q1.</b> Does adding read replicas solve this?</summary>
+
+**How to think:** match the fix to the bottleneck.
+
+- Replicas add read capacity only. Every write still goes through the one primary.
+- Doubled writes are 3,800/sec, past the 2,000 ceiling, no matter how many replicas exist.
+- Each replica also adds more replication lag.
+
+<details>
+<summary><b>Q1a.</b> What do you do instead, and how many shards?</summary>
+
+**How to think:** split the writes, then check the storage constraint too.
+
+- Split writes by sharding (or master-master with conflict resolution).
+- Writes alone: ceil(3,800 / 2,000) = 2 primaries, or ceil(4,560 / 2,000) = 3 with 20% headroom.
+- Storage: 2 billion × 300 bytes = 600 GB. At a 60 GB target per shard that is 10 shards.
+- Take the larger answer: 10 shards, about 380 writes/sec each, far under the ceiling.
+
+<details>
+<summary><b>Q1b.</b> How do you choose the shard key, and what stays on replicas?</summary>
+
+- Shard on `user_id`. One user's pins stay on one shard.
+- Cost: queries across users, like "everything created yesterday", become cross-shard.
+- If you expect to resize, use consistent hashing. `id % N` remaps almost every row when N changes.
+- Keep replicas per shard for reads. Decide which reads tolerate lag and which must go to the primary.
+</details>
+</details>
+</details>
 
 **Case-study pointer:**
 
-- Capstone #1 (Pinterest's visual-search/Flashlight-Lens-Shop-the-Look system) serves an embedding/image-metadata index at a scale — hundreds of millions to billions of images — that requires exactly the sharding pattern above: the index is partitioned by a shard key over the item/image identifier space, so no single node has to hold the entire index or absorb its entire query load.
-- Capstone #6 (LinkedIn's "People You May Know") operates over a connection graph large enough to need the same treatment. As an order-of-magnitude illustration only (these exact figures aren't what the cited sources below confirm): at LinkedIn's member-base scale — hundreds of millions of members, by the company's own public figures — a connection graph alone would run into hundreds of billions of stored edge halves (members times average degree). That is only a few terabytes of rows, so capacity is not what forces sharding; the pressure is the throughput of triangle-closing (inferring a likely connection because two people share a mutual connection), whose second-degree expansion grows much faster than the site. LinkedIn's team page names Voldemort, Hadoop workflows (Azkaban) and Kafka and does not describe a sharded graph store, so the capstone's sharded design is a teaching illustration.
+- **Capstone #1 (Pinterest's visual-search / Flashlight-Lens-Shop-the-Look system)**
+  - It serves an embedding/image-metadata index at a scale (hundreds of millions to billions of images) that requires exactly this sharding pattern.
+  - The index is partitioned by a shard key over the item/image identifier space, so no single node holds the whole index or absorbs its whole query load.
+- **Capstone #6 (LinkedIn's "People You May Know")**
+  - It operates over a connection graph large enough to need the same treatment.
+  - Order-of-magnitude illustration only (these exact figures aren't what the cited sources confirm): at hundreds of millions of members, a connection graph runs to hundreds of billions of stored edge halves (members times average degree).
+  - That is only a few terabytes of rows, so capacity is not what forces sharding. The pressure is the throughput of triangle-closing (inferring a likely connection because two people share a mutual connection), whose second-degree expansion grows much faster than the site.
+  - LinkedIn's team page names Voldemort, Hadoop workflows (Azkaban) and Kafka, and does not describe a sharded graph store, so the capstone's sharded design is a teaching illustration.
 
 **Source(s) and further reading:**
 
@@ -127,7 +202,7 @@ None of the five is "the" answer — production systems at this scale typically 
 
 ### Why?
 
-Some data doesn't look like neat, uniform rows that join cleanly on foreign keys — for example:
+Some data doesn't look like neat, uniform rows that join cleanly on foreign keys. For example:
 
 - A social graph of users and their connections.
 - A per-session blob with a different shape for every user.
@@ -135,18 +210,34 @@ Some data doesn't look like neat, uniform rows that join cleanly on foreign keys
 
 Forcing any of this into an RDBMS's fixed-schema, join-centric model costs real performance and real schema-migration pain, for no benefit.
 
-**NoSQL** databases (the name is historical shorthand for "not only SQL," not a single technology) trade away some of an RDBMS's guarantees for a data model that matches a specific access pattern more directly, and scales horizontally with fewer structural compromises.
+**NoSQL** databases (historically "not only SQL", not a single technology) trade away some of an RDBMS's guarantees. In return they get a data model that matches a specific access pattern more directly, and scale horizontally with fewer structural compromises.
 
 ### What?
 
-Four common NoSQL types, each matched to a different access pattern:
+Four common NoSQL types, each matched to a different access pattern.
 
-- **Key-value store** — works like a coat-check ticket: hand over the key, get back the value, and the store never looks inside it. There's no query capability beyond "get me the value for this key" (and sometimes "set/delete this key") — no joins, no secondary indexes, no schema at all beyond key and value. That simplicity is exactly what makes it trivially shardable: the entire routing problem is "which node owns this key," identical in shape to Concept 1's shard-key problem. Examples: Redis, DynamoDB.
-- **Document store** — like a filing cabinet of folders where every folder can hold a different mix of papers, and — unlike the key-value store above — you can search by what's written on any page inside a folder, not just the label on its tab. It stores semi-structured **documents** (nested, JSON-like objects, physically often stored as BSON — Binary JSON, a binary-encoded superset of the JSON format): each document can have a different internal shape from every other document in the same collection, and the database can query and index on fields *inside* the document. Example: MongoDB.
-- **Wide-column store** — like a spreadsheet with thousands of possible columns where most cells in most rows are simply left blank. Every row is indexed by a single **row key**, but different rows can have a hugely different number and set of columns (most columns are *sparse* — present on some rows, absent on most), and related columns are grouped into **column families** that are physically stored together on disk, so a query touching only one column family doesn't have to read the others. Purpose-built for enormous, sparse datasets where a fully rigid schema (every row must have every column) would waste huge amounts of storage. Examples: Cassandra, HBase, Google Bigtable.
-- **Graph database** — think of a subway map, where stations are **nodes** (entities) and the tracks between them are **edges** (relationships), both of which can carry their own properties. Purpose-built for traversal queries ("find every node within 2 hops of this one" — "which stations are two stops from here") that are cheap to express this way but become a chain of expensive self-joins in a relational model. Example: Neo4j.
+- **Key-value store**
+  - Works like a coat-check ticket: hand over the key, get back the value, and the store never looks inside.
+  - Only "get the value for this key" (and sometimes set/delete). No joins, no secondary indexes, no schema beyond key and value.
+  - That simplicity makes it trivially shardable: the whole routing problem is "which node owns this key", the same shape as Concept 1's shard-key problem.
+  - Examples: Redis, DynamoDB.
+- **Document store**
+  - Like a filing cabinet where every folder holds a different mix of papers, and unlike the key-value store you can search by what's written on any page inside a folder.
+  - Stores semi-structured **documents** (nested, JSON-like objects, often physically stored as BSON, a binary-encoded superset of JSON).
+  - Each document can have a different shape in the same collection, and the database can query and index fields *inside* it.
+  - Example: MongoDB.
+- **Wide-column store**
+  - Like a spreadsheet with thousands of possible columns where most cells are blank.
+  - Every row is indexed by a single **row key**, but rows can have hugely different sets of columns (mostly *sparse*).
+  - Related columns are grouped into **column families** stored together on disk, so a query touching one family doesn't read the others.
+  - Built for enormous, sparse datasets where a rigid schema would waste huge storage.
+  - Examples: Cassandra, HBase, Google Bigtable.
+- **Graph database**
+  - Like a subway map: stations are **nodes** (entities), tracks are **edges** (relationships), and both can carry properties.
+  - Built for traversal queries ("every node within 2 hops", "which stations are two stops from here"). They are cheap here and a chain of expensive self-joins in a relational model.
+  - Example: Neo4j.
 
-Comparing the four NoSQL types' access pattern and representative systems:
+The four types, their access pattern and representative systems:
 
 ```mermaid
 flowchart TD
@@ -156,23 +247,28 @@ flowchart TD
     DATA --> GR["Graph database\nnodes + edges, optimized for\ntraversal queries\ne.g. Neo4j"]
 ```
 
-**SQL vs. NoSQL — an explicit trade-off, not a verdict.** A relational database's ACID guarantees (Concept 1) come from real engineering cost: enforcing strict consistency and isolation on every transaction is work, and that work gets harder to do cheaply the more nodes the data is spread across. Most NoSQL databases instead follow **BASE**:
+**SQL vs. NoSQL — a trade-off, not a verdict.**
 
-- **B**asically **A**vailable — the system stays responsive to requests essentially all the time, even if some responses aren't the freshest possible data.
-- **S**oft state — the system's stored state can change over time even with no new writes, as replicas keep converging toward each other in the background.
-- **E**ventual consistency — the same guarantee Lesson 3's Concept I2 defined: given enough time with no new writes, all replicas converge to the same value, but there's no bound on exactly how long that takes.
-
-This is the same CP-vs-AP tension from Lesson 3's CAP theorem, now expressed as a database *design philosophy* rather than a one-time runtime choice: an RDBMS's defaults lean toward consistency; most NoSQL databases' defaults lean toward availability and horizontal scalability, with strong consistency available only as an opt-in, costlier mode if at all.
+- An RDBMS's ACID guarantees come from real engineering cost. Strict consistency and isolation on every transaction is work, and it gets harder to do cheaply the more nodes the data spans.
+- Most NoSQL databases follow **BASE** instead:
+  - **B**asically **A**vailable — stays responsive essentially all the time, even if some responses aren't the freshest data.
+  - **S**oft state — stored state can change over time even with no new writes, as replicas converge in the background.
+  - **E**ventual consistency — the guarantee Lesson 3's Concept I2 defined: given enough time with no new writes, replicas converge, with no bound on how long.
+- This is the same CP-vs-AP tension from Lesson 3's CAP theorem, now as a database *design philosophy* rather than a runtime choice.
+  - RDBMS defaults lean toward consistency.
+  - Most NoSQL defaults lean toward availability and horizontal scalability, with strong consistency as an opt-in, costlier mode if at all.
 
 ### How?
 
-**Why a vector database is a hybrid, not a fifth category.** Lesson 1's Concept C2 defined a **vector database** as a database purpose-built to store large numbers of embeddings and answer "find the k nearest vectors to this query vector" efficiently, typically via an index like **HNSW** (Hierarchical Navigable Small World — a graph-based approximate-nearest-neighbor index, already defined in full in Lesson 1). It's tempting to treat that as a fifth NoSQL category alongside the four above — but look at its actual storage shape, piece by piece:
+**Why a vector database is a hybrid, not a fifth category.**
+
+Lesson 1's Concept C2 defined a **vector database** as one built to store large numbers of embeddings and answer "find the k nearest vectors to this query vector", typically via an index like **HNSW** (Hierarchical Navigable Small World, a graph-based approximate-nearest-neighbor index, defined in Lesson 1). It is tempting to treat it as a fifth NoSQL category. Look at its storage shape piece by piece:
 
 1. Each row is addressed by a row/vector ID — key-value's defining trait.
-2. The "value" is almost always a fixed-width numeric array (the embedding) plus a sidecar of variable metadata fields — document-store-like, but secondary to the vector itself.
-3. At real scale, that data is sharded across many nodes by vector ID, in the same row-key-sharding shape a wide-column store uses — not by any graph-traversal or relationship structure.
+2. The "value" is almost always a fixed-width numeric array (the embedding) plus a sidecar of variable metadata — document-store-like, but secondary to the vector.
+3. At scale it is sharded across nodes by vector ID, in the row-key-sharding shape of a wide-column store — not by any graph or relationship structure.
 
-Visualizing why those three traits compose into a hybrid rather than a new category:
+Why those three traits compose into a hybrid rather than a new category:
 
 ```mermaid
 flowchart LR
@@ -184,19 +280,63 @@ flowchart LR
     T3 --> HYBRID
 ```
 
-So a vector database is a **KV/wide-column hybrid with a specialized similarity index bolted onto the value side**, not a new storage paradigm: the actual innovation is the *index* (HNSW, or similar structures), not the underlying row/key storage model, which is architecturally ordinary.
+So a vector database is a **KV/wide-column hybrid with a specialized similarity index bolted onto the value side**. The innovation is the *index* (HNSW or similar), not the row/key storage model, which is architecturally ordinary.
 
 **Trade-offs considered:**
 
-- Key-value: the fastest possible lookups and the simplest possible sharding story, but can answer only "get this exact key" — no range queries, no filtering on value contents.
-- Document: trades some of that simplicity for queryability on nested fields, at the cost of needing a real indexing strategy per field you want to query on.
-- Wide-column: handles sparse, massive-scale data efficiently but gives up most relational query flexibility — you design the row-key and column-family layout around known access patterns up front, not after the fact.
-- Graph: makes traversal queries cheap but is usually the wrong choice for workloads that are mostly simple key lookups — graph-traversal engines optimize for a different access shape.
+- **Key-value:** the fastest lookups and simplest sharding, but only "get this exact key". No range queries, no filtering on value contents.
+- **Document:** trades some simplicity for queryability on nested fields, and needs a real indexing strategy per queried field.
+- **Wide-column:** handles sparse, massive-scale data efficiently but gives up most relational flexibility. You design the row key and column families around known access patterns up front.
+- **Graph:** makes traversal cheap, but is usually wrong for mostly simple key lookups.
+
+**Situation to reason through:**
+
+- A new AI feature needs four kinds of data:
+  - (a) per-session chat state, a different shape per session, looked up only by session ID;
+  - (b) a product catalog whose items have 2 to 20 attributes, queried by attribute;
+  - (c) "everyone within two hops of this user";
+  - (d) embeddings for retrieval.
+- A vendor pitches a "fifth category" database for (d).
+- Separately, the agent must read back a memory it wrote 100 ms earlier.
+
+<details>
+<summary><b>Q1.</b> Which store type fits each of (a), (b), (c)?</summary>
+
+**How to think:** match each access pattern to a type.
+
+- (a) **Key-value.** Exact-key lookup, trivially shardable.
+- (b) **Document store.** Varied shape and you can query inside the document, though each queried field needs an index.
+- (c) **Graph database.** Two-hop traversal is cheap there and a chain of self-joins in a relational model.
+
+<details>
+<summary><b>Q1a.</b> How do you answer the vendor's "fifth category" pitch for (d)?</summary>
+
+**How to think:** look at the storage shape, not the label.
+
+- Rows are addressed by ID, the value is a fixed-width array plus metadata, and the data is sharded by ID. That is a KV/wide-column hybrid.
+- What is new is the HNSW index.
+- So sharding (Concept 1) and consistency (Lesson 3) reasoning carries over unchanged.
+- Ask the vendor what is new in the index, and what its replication and consistency defaults are.
+
+<details>
+<summary><b>Q1b.</b> What about the memory read back 100 ms after the write?</summary>
+
+- Most NoSQL defaults are BASE, so eventually consistent.
+- The 100 ms read-back is exactly Lesson 3's "agent forgets" failure.
+- For that path you need a stronger opt-in mode, or must confirm the product offers one.
+- Don't force one store. Production systems combine these, choosing per access pattern and accepting that consistency settings differ per store.
+</details>
+</details>
+</details>
 
 **Case-study pointer:**
 
-- Capstone #1 (Pinterest) binarizes its learned embeddings specifically to make them cheap to store and search at the scale its visual-search system operates at — a storage-format decision that only makes sense once a vector database is understood as sitting on this KV/wide-column spectrum (fixed-width value blobs, sharded by key), not as some entirely separate kind of database with its own rules.
-- Capstone #9 (the RAG system grounded in Anthropic's Contextual Retrieval, Sept. 2024) depends on exactly this same storage-and-retrieval layer to hold its chunk embeddings. Anthropic's technique prepends LLM-generated context to each chunk *before* embedding and indexing it, but the resulting embeddings still live in a database with precisely this KV/wide-column shape underneath.
+- **Capstone #1 (Pinterest)**
+  - It binarizes its learned embeddings specifically to make them cheap to store and search at its scale.
+  - That storage-format decision only makes sense once a vector database is understood as sitting on the KV/wide-column spectrum (fixed-width value blobs, sharded by key), not as a separate kind of database with its own rules.
+- **Capstone #9 (RAG system grounded in Anthropic's Contextual Retrieval, Sept. 2024)**
+  - It depends on this same storage-and-retrieval layer to hold its chunk embeddings.
+  - The technique prepends LLM-generated context to each chunk *before* embedding and indexing, but the resulting embeddings still live in a database with this KV/wide-column shape underneath.
 
 **Source(s) and further reading:**
 
@@ -212,23 +352,24 @@ So a vector database is a **KV/wide-column hybrid with a specialized similarity 
 
 ### Why?
 
-Whether it's an RDBMS (Concept 1) or a NoSQL store (Concept 2), the database is almost always the slowest, most expensive-to-scale layer in a system. So a disproportionate amount of real-world scaling work isn't "make the database faster" — it's "don't ask the database in the first place."
+Whether it's an RDBMS (Concept 1) or a NoSQL store (Concept 2), the database is almost always the slowest, most expensive-to-scale layer. So much real-world scaling work isn't "make the database faster". It is "don't ask the database in the first place."
 
-A **cache** is a smaller, faster-to-access store that holds a copy of data normally served by a slower source, specifically so repeat requests for the same data don't pay that slower source's cost again. It's the same idea as keeping a few snacks in your desk drawer instead of walking to the kitchen every time you're hungry: the drawer is faster to reach, but someone has to remember to restock it, and if it goes stale, you might reach for something you shouldn't.
+A **cache** is a smaller, faster-to-access store holding a copy of data normally served by a slower source, so repeat requests don't pay the slower source's cost again.
 
-Where you put a cache, and which strategy governs how it's kept in sync with the underlying store, determines whether it actually relieves load or quietly starts serving wrong answers.
+- Think of snacks in your desk drawer instead of walking to the kitchen: faster to reach, but someone must restock it, and if it goes stale you might reach for something you shouldn't.
+- Where you put a cache, and which strategy keeps it in sync with the underlying store, decides whether it relieves load or quietly serves wrong answers.
 
 ### What?
 
-**Where to cache** — a request can be served from a cache at several points before it ever reaches the database:
+**Where to cache.** A request can be served from a cache at several points before reaching the database:
 
 - Client-side (the calling application or browser itself).
 - A CDN edge node (Lesson 4's Concept J2), for static content.
-- The application/web-server layer — an in-process, local in-memory cache.
-- A **distributed cache** — a dedicated caching service like Redis or Memcached, shared across every application server instance, sitting between the application layer and the database.
+- The application/web-server layer: an in-process, local in-memory cache.
+- A **distributed cache**: a dedicated service like Redis or Memcached, shared across every application instance, between the application and the database.
 - The database's own internal query cache.
 
-Visualizing how a request can be served before it ever reaches the database:
+How a request can be served before it reaches the database:
 
 ```mermaid
 flowchart LR
@@ -240,52 +381,73 @@ flowchart LR
     DBCACHE -->|miss| DB[("Database")]
 ```
 
-Each hop closer to the caller saves more latency on a hit — but a cache local to one server (rather than shared/distributed) can't be hit by a request that lands on a different server.
+Each hop closer to the caller saves more latency on a hit. But a cache local to one server (rather than shared/distributed) can't be hit by a request that lands on a different server.
 
-Four caching strategies, defined by what each does on a read vs. a write:
+**Four caching strategies**, defined by what each does on a read vs. a write.
 
-- **Cache-aside** (also called **lazy loading**) — the classic "check the fridge before going to the store" pattern. On a read, the application checks the cache first; on a hit, it returns the cached value directly; on a **cache miss**, it reads from the underlying database, then writes that result into the cache (usually with a **TTL** — time-to-live, the same concept Lesson 4's Concept J1 defined for DNS records, here applied to a cache entry: a duration after which the entry is considered stale and must be re-fetched rather than trusted) before returning it to the caller. The cache is only ever populated by read misses — nothing proactively pushes data into it. This is simple and resilient — a dead cache just makes reads slower, not wrong — but every first read after a miss pays full database latency, and the cached copy can go stale for up to a full TTL before anyone notices.
+**1. Cache-aside** (also **lazy loading**) — the "check the fridge before the store" pattern.
 
-  Tracing cache-aside's check-first, populate-on-miss sequence:
+- On a read, the application checks the cache first.
+  - Hit: return the cached value.
+  - Miss: read from the database, write the result into the cache (usually with a **TTL**, the time-to-live Lesson 4's Concept J1 defined for DNS records, here on a cache entry: after it the entry is stale and must be re-fetched), then return it.
+- The cache is populated only by read misses. Nothing proactively pushes data in.
+- Pros: simple and resilient. A dead cache makes reads slower, not wrong.
+- Cons: every first read after a miss pays full database latency, and the cached copy can go stale for up to a full TTL before anyone notices.
 
-  ```mermaid
-  sequenceDiagram
-      participant App as Application
-      participant Cache
-      participant DB as Database
-      App->>Cache: check cache
-      alt cache hit
-          Cache-->>App: cached value
-      else cache miss
-          App->>DB: read from database
-          DB-->>App: value
-          App->>Cache: write value (with TTL)
-      end
-  ```
+Cache-aside's check-first, populate-on-miss sequence:
 
-- **Write-through** — every write is applied to the cache *and* the underlying database together, synchronously, before the write is considered complete and the caller gets an acknowledgment — like refusing to call a filing "done" until both the home copy and the office copy are updated. The cache is always consistent with the database immediately after a write (there's no window where a committed write hasn't yet reached the cache), at the direct cost of doubling every write's latency — and the cache ends up holding entries that may never be read again, since writing populates it regardless of whether that data will ever be requested.
-- **Write-behind** (also called **write-back**) — a write is applied to the cache immediately and acknowledged to the caller right away, while the actual write to the underlying database is deferred and performed asynchronously afterward (often batched with other pending writes) — like scribbling a note now and trusting you'll file it properly later. Writes are fast from the caller's perspective, but there's a real window where the cache is ahead of the database, and if the cache fails before that deferred write completes, it's lost outright — like the unfiled note. A direct trade of durability for write latency.
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant Cache
+    participant DB as Database
+    App->>Cache: check cache
+    alt cache hit
+        Cache-->>App: cached value
+    else cache miss
+        App->>DB: read from database
+        DB-->>App: value
+        App->>Cache: write value (with TTL)
+    end
+```
 
-  Contrasting write-through's synchronous dual-write with write-behind's deferred write:
+**2. Write-through** — every write is applied to the cache *and* the database together, synchronously, before the caller gets an acknowledgment.
 
-  ```mermaid
-  flowchart LR
-      subgraph "Write-through"
-          W1["Write"] --> C1["Cache (sync)"]
-          W1 --> D1b["Database (sync)"]
-          C1 --> ACK1["Ack to caller\n(after both complete)"]
-          D1b --> ACK1
-      end
-      subgraph "Write-behind"
-          W2["Write"] --> C2b["Cache (immediate)"]
-          C2b --> ACK2["Ack to caller\n(immediately)"]
-          C2b -.->|"deferred, async,\noften batched"| D2b["Database (later)"]
-      end
-  ```
+- Like refusing to call a filing "done" until both the home and office copy are updated.
+- Pro: the cache is consistent with the database immediately after a write. No window where a committed write hasn't reached the cache.
+- Cons: doubles every write's latency, and the cache fills with entries that may never be read, since writing populates it regardless.
 
-- **Refresh-ahead** — the cache proactively re-fetches a soon-to-expire entry from the underlying database *before* its TTL actually runs out, typically triggered once an entry crosses some fraction of its TTL (e.g., 80% of the way to expiry) while it's still being actively accessed — like refilling the coffee pot before it's empty rather than waiting until the last cup to start brewing. This exists specifically to prevent a **thundering herd**: a burst of many concurrent requests that all miss the cache for the same key at the same instant — because its TTL just expired right as a wave of traffic arrived — and all fall through to the database simultaneously, which can look like a traffic spike many times larger than the real request rate. Cost: refresh-ahead does real background work refreshing entries that might not actually be requested again before they'd otherwise have expired naturally.
+**3. Write-behind** (also **write-back**) — a write is applied to the cache and acknowledged immediately; the database write is deferred and done asynchronously (often batched).
 
-Visualizing refresh-ahead's proactive re-fetch before a thundering herd can form:
+- Like scribbling a note now and trusting you'll file it properly later.
+- Pro: writes are fast from the caller's view.
+- Cons: a real window where the cache is ahead of the database. If the cache fails before the deferred write completes, the write is lost outright, like the unfiled note.
+- A direct trade of durability for write latency.
+
+Write-through's synchronous dual-write vs. write-behind's deferred write:
+
+```mermaid
+flowchart LR
+    subgraph "Write-through"
+        W1["Write"] --> C1["Cache (sync)"]
+        W1 --> D1b["Database (sync)"]
+        C1 --> ACK1["Ack to caller\n(after both complete)"]
+        D1b --> ACK1
+    end
+    subgraph "Write-behind"
+        W2["Write"] --> C2b["Cache (immediate)"]
+        C2b --> ACK2["Ack to caller\n(immediately)"]
+        C2b -.->|"deferred, async,\noften batched"| D2b["Database (later)"]
+    end
+```
+
+**4. Refresh-ahead** — the cache proactively re-fetches a soon-to-expire entry *before* its TTL runs out.
+
+- Typically triggered once an active entry crosses some fraction of its TTL (e.g. 80%). Like refilling the coffee pot before it's empty.
+- It exists to prevent a **thundering herd**: many concurrent requests all miss the cache for the same key at the same instant, because its TTL just expired as a traffic wave arrived. They all fall through to the database at once, which can look like a spike many times the real request rate.
+- Cost: real background work refreshing entries that might never be requested again before they'd expire naturally.
+
+Refresh-ahead's proactive re-fetch before a thundering herd can form:
 
 ```mermaid
 flowchart LR
@@ -297,9 +459,9 @@ flowchart LR
 
 ### How?
 
-A cache's hit rate isn't just a nice-to-have metric — it's a real capacity number, because the database only ever sees the fraction of traffic the cache *misses*.
+A cache's hit rate isn't just a nice metric. It is a capacity number, because the database only ever sees the fraction of traffic the cache *misses*.
 
-**Worked example.** An application serves 40,000 reads/sec against data backed by a database that can sustain at most 5,000 queries/sec before it saturates. A cache-aside layer sits in front of it.
+**Worked example.** An application serves 40,000 reads/sec against a database that saturates at 5,000 queries/sec, with a cache-aside layer in front.
 
 ```
 At a measured 92% cache hit rate:
@@ -311,7 +473,7 @@ At a measured 92% cache hit rate:
   headroom vs. DB's 5,000 qps ceiling = 5,000 - 3,200 = 1,800 qps spare (36% headroom)
 ```
 
-That's comfortably inside the database's capacity. Now say a cache-eviction storm (a burst of cache invalidations, or a cache restart that wipes it cold) drops the measured hit rate to 85%:
+Comfortably inside capacity. Now a cache-eviction storm (a burst of invalidations, or a restart that wipes it cold) drops the hit rate to 85%:
 
 ```
 At 85% cache hit rate:
@@ -320,19 +482,64 @@ At 85% cache hit rate:
   vs. DB's 5,000 qps ceiling: 6,000 - 5,000 = 1,000 qps over capacity (20% overloaded)
 ```
 
-A 7-percentage-point drop in hit rate (92% → 85%) swung the database from 36% headroom to being overloaded by 20% — because the database only ever sees the *missed* fraction of total traffic, and that missed fraction is small enough at a high hit rate to look irrelevant right up until it isn't. This is the same arithmetic shape as Lesson 4's Concept J2 CDN cache-hit-ratio calculation, applied one layer lower in the stack (database caching instead of static-asset caching).
+- A 7-point drop in hit rate (92% → 85%) swung the database from 36% headroom to 20% overloaded.
+- The database only sees the *missed* fraction, which looks irrelevant at a high hit rate right up until it isn't.
+- This is the same arithmetic as Lesson 4's Concept J2 CDN hit-ratio calculation, one layer lower in the stack.
 
 **Trade-offs considered:**
 
-- Cache-aside is the simplest and most fault-tolerant option (a dead cache degrades to "just slower," not "wrong"), but every cold key pays full database latency on its first request, and a sudden wave of simultaneously-expiring popular keys can itself cause a thundering herd.
-- Write-through guarantees the cache is never stale relative to the database, at the cost of doubling every write's latency and caching writes that may never be read.
-- Write-behind is the fastest option for writes, but genuinely risks data loss and reintroduces Lesson 3's consistency concerns — a read-after-write from a different path than the cache can see state the database doesn't have yet.
-- Refresh-ahead avoids thundering-herd expiry spikes for genuinely hot keys, but spends real background work refreshing entries speculatively — wasted effort for any key that turns out not to be re-requested.
+- **Cache-aside:** simplest and most fault-tolerant, but every cold key pays full database latency on its first request. A wave of simultaneously expiring popular keys can itself cause a thundering herd.
+- **Write-through:** the cache is never stale relative to the database, at the cost of doubled write latency and caching writes that may never be read.
+- **Write-behind:** fastest for writes, but risks data loss and reintroduces Lesson 3's consistency concerns. A read-after-write from a path other than the cache can see state the database doesn't have yet.
+- **Refresh-ahead:** avoids expiry spikes for genuinely hot keys, but spends background work refreshing speculatively. Wasted for any key not re-requested.
+
+**Situation to reason through:**
+
+- A product-page service handles 60,000 reads/sec.
+- The database ceiling is 8,000 queries/sec. The cache-aside layer normally hits 93%.
+- Ops plans to restart the cache fleet during business hours.
+
+<details>
+<summary><b>Q1.</b> Is a full cache restart safe?</summary>
+
+**How to think:** find the break-even hit rate, then see where a cold cache lands.
+
+- Baseline: 60,000 × (1 − 0.93) = 4,200 queries/sec, 52.5% of the ceiling. Fine.
+- The database absorbs 8,000 / 60,000 ≈ 13.3% misses, so the hit rate must stay at or above about 86.7%.
+- A full cold restart drops the hit rate to near 0%, so 60,000 queries/sec reach the database. That is 7.5x its ceiling, with a thundering herd on top. **Not safe.**
+
+<details>
+<summary><b>Q1a.</b> What about a rolling restart? How much can be cold at once?</summary>
+
+**How to think:** model the hit rate as a function of the cold fraction f.
+
+- With keys spread evenly, hit rate ≈ 0.93 × (1 − f).
+- Staying above 86.7% needs f ≤ about 6.8%.
+- 10% at a time: 83.7% hit rate, about 9,780 queries/sec. Over the ceiling.
+- 5% at a time: 88.4% hit rate, about 6,990 queries/sec. Safe.
+
+<details>
+<summary><b>Q1b.</b> What else protects the database during the restart?</summary>
+
+- Pre-warm replacement nodes from a hot-key list before they take traffic.
+- Use refresh-ahead on the hottest keys to avoid a herd.
+- Put a bounded queue or a 429 in front of the database (Lesson 6) so a miss storm degrades gracefully instead of toppling it.
+- Cache-aside makes a dead cache slower, not wrong, so the risk here is capacity.
+- Assumes cold nodes serve no hits at first and traffic is evenly spread.
+</details>
+</details>
+</details>
 
 **Case-study pointer:**
 
-- Capstone #10's KV-cache reuse (`case-studies/llm-inference-serving`) is architecturally a cache-aside pattern applied to GPU compute state instead of database rows: on each new request, the serving engine checks whether a matching prefix's key/value tensors are already resident in GPU memory (the cache check); on a miss, it computes them from scratch via the model's forward pass (the equivalent of a database read); on a hit, it reuses the already-computed tensors directly, skipping that computation entirely. Same "check cache, fall through on a miss, populate for next time" shape as cache-aside — just with "the expensive path" being a GPU forward pass instead of a SQL query.
-- Capstone #9 (`case-studies/rag-contextual-retrieval`) exhibits the same shape one layer up the pipeline: Anthropic's Contextual Retrieval technique computes an LLM-generated context prefix for each document chunk once, at indexing time, so that expensive step never has to be repeated for every future query against that chunk — a one-time write that's then read many times, precisely the workload cache-aside and write-through both exist to optimize for.
+- **Capstone #10's KV-cache reuse** (`case-studies/llm-inference-serving`) is architecturally cache-aside applied to GPU compute state instead of database rows.
+  - On each new request, the engine checks whether a matching prefix's key/value tensors are already in GPU memory (the cache check).
+  - Miss: compute them from scratch via the forward pass (the equivalent of a database read).
+  - Hit: reuse the tensors and skip that computation.
+  - Same "check cache, fall through on a miss, populate for next time" shape. The expensive path is a GPU forward pass instead of a SQL query.
+- **Capstone #9** (`case-studies/rag-contextual-retrieval`) shows the same shape one layer up the pipeline.
+  - Contextual Retrieval computes an LLM-generated context prefix for each chunk once, at indexing time, so that step is never repeated per query.
+  - A one-time write that's read many times: the workload cache-aside and write-through both exist to optimize.
 
 **Source(s) and further reading:**
 
@@ -347,13 +554,23 @@ A 7-percentage-point drop in hit rate (92% → 85%) swung the database from 36% 
 
 ### Why?
 
-This Concept connects the classic patterns just taught (K1-K3) to their AI-native cousins from Lesson 1. It's not a fifth new topic, and it doesn't re-explain K1-K3 or Lesson 1's B4/C2 from scratch — just the short synthesis that makes the connection explicit.
+This Concept connects the classic patterns just taught (K1-K3) to their AI-native cousins from Lesson 1.
+
+- It isn't a fifth new topic.
+- It doesn't re-explain K1-K3 or Lesson 1's B4/C2 from scratch. It is the short synthesis that makes the connection explicit.
 
 ### What?
 
-Lesson 1's Concept B4 defined **semantic caching**: a caching strategy for LLM applications that stores past prompt/response pairs and, for a new incoming prompt, checks whether it's *semantically* similar enough to a cached prompt (via embedding similarity) to reuse the cached response, instead of requiring an exact string match. Lesson 1's Concept C2 defined the **vector database** this depends on.
+- Lesson 1's Concept B4 defined **semantic caching**: a caching strategy for LLM apps that stores past prompt/response pairs.
+  - For a new prompt, it checks whether the prompt is *semantically* similar enough to a cached one (via embedding similarity) to reuse the response, instead of requiring an exact string match.
+- Lesson 1's Concept C2 defined the **vector database** this depends on.
 
-Put plainly: **semantic caching is Concept 3's cache-aside algorithm, with the cache-key lookup replaced by a nearest-neighbor similarity search.** It's the difference between a librarian who only finds a book if you recite its exact catalog title, versus one who recognizes that "the one about the whale" and "Moby Dick" are the same request. Classic cache-aside asks "does this exact key already exist in the cache?" — an equality check. Semantic caching asks "does a sufficiently *similar* key already exist?" — a nearest-neighbor check within some similarity threshold, run against a vector database (Concept 2's KV/wide-column hybrid with a similarity index). Everything else about the algorithm's shape — check first, serve on a hit, fall through to the expensive path on a miss, populate the cache afterward — is identical.
+Put plainly: **semantic caching is Concept 3's cache-aside algorithm, with the cache-key lookup replaced by a nearest-neighbor similarity search.**
+
+- It is the difference between a librarian who only finds a book if you recite its exact catalog title, and one who recognizes that "the one about the whale" and "Moby Dick" are the same request.
+- Classic cache-aside asks "does this exact key exist?" (an equality check).
+- Semantic caching asks "does a sufficiently *similar* key exist?" (a nearest-neighbor check within a similarity threshold), run against a vector database (Concept 2's KV/wide-column hybrid with a similarity index).
+- Everything else is identical: check first, serve on a hit, fall through to the expensive path on a miss, populate the cache afterward.
 
 ### How?
 
@@ -361,11 +578,11 @@ Put plainly: **semantic caching is Concept 3's cache-aside algorithm, with the c
 
 1. A new prompt arrives.
 2. Embed the prompt (Lesson 1, Concept C1) into a vector.
-3. Query the vector database for the nearest previously-cached prompt embedding, and check whether its similarity (commonly cosine similarity, defined in Lesson 1's Concept C1) clears a configured threshold.
-4. **Hit** (a sufficiently similar cached prompt exists): return the cached response directly — the underlying LLM is never called for this request at all.
-5. **Miss** (nothing clears the threshold): call the LLM to generate a real response, then embed this new prompt-response pair and write it into the vector database, so a future, similar-enough prompt can hit on it.
+3. Query the vector database for the nearest previously cached prompt embedding, and check whether its similarity (commonly cosine similarity, defined in Lesson 1's Concept C1) clears a configured threshold.
+4. **Hit** (a sufficiently similar cached prompt exists): return the cached response. The LLM is never called.
+5. **Miss** (nothing clears the threshold): call the LLM, then embed the new prompt-response pair and write it into the vector database for future hits.
 
-Tracing the same cache-aside shape with similarity search in place of exact-key lookup:
+The same cache-aside shape with similarity search in place of exact-key lookup:
 
 ```mermaid
 sequenceDiagram
@@ -383,9 +600,16 @@ sequenceDiagram
     end
 ```
 
-**Worked illustration — why the threshold matters, not just whether caching is "on."** A support chatbot's exact-match cache-aside layer (keying on the literal prompt string) measures only a 5% hit rate in practice — unsurprising, since real users phrase the same question many different ways ("how do I reset my password," "I forgot my password, help," "password reset not working"), and an exact-match cache can't see any of those as "the same question." Switching to a semantic cache with a similarity threshold of 0.95 (on a -1-to-1 cosine-similarity scale) raises the measured hit rate to roughly 40% on the same traffic, because it now recognizes differently-worded, same-intent prompts as hits. Lowering the threshold further to 0.90 would raise the hit rate again (Concept 3's hit-rate math applies exactly as before: every additional hit reduces load on the LLM backend the same way it reduced load on a database) — but at a falling threshold, the risk of a **false-positive hit** rises too: returning a cached answer to a question that was merely similar, not actually the same — something an exact-match cache (which can only ever return the literal answer to the literal same key) can't do at all, right or wrong.
+**Worked illustration — why the threshold matters, not just whether caching is "on".**
 
-Visualizing how lowering the threshold trades hit rate for false-positive risk:
+- A support chatbot's exact-match cache-aside layer (keying on the literal prompt string) measures only a 5% hit rate.
+  - Unsurprising: real users phrase the same question many ways ("how do I reset my password", "I forgot my password, help", "password reset not working").
+  - An exact-match cache sees none of those as the same question.
+- A semantic cache at a similarity threshold of 0.95 (on a −1-to-1 cosine scale) raises the hit rate to roughly 40% on the same traffic, because it recognizes differently worded, same-intent prompts as hits.
+- Lowering the threshold to 0.90 would raise the hit rate again (Concept 3's hit-rate math applies exactly as before: every extra hit reduces load on the LLM backend the way it reduced load on a database).
+- But as the threshold falls, the risk of a **false-positive hit** rises: returning a cached answer to a question that was merely similar, not the same. An exact-match cache can't do this at all, right or wrong.
+
+How lowering the threshold trades hit rate for false-positive risk:
 
 ```mermaid
 flowchart LR
@@ -393,15 +617,57 @@ flowchart LR
     SEM95 -->|"lower threshold to 0.90"| SEM90["Higher hit rate,\nhigher false-positive-hit risk"]
 ```
 
-**Trade-offs considered:** A low similarity threshold raises the semantic cache's hit rate and cost savings (per Concept 3's arithmetic), but raises the odds of serving a subtly wrong answer. A high threshold is safer but converges toward classic exact-match caching's low hit rate, giving up most of the reason to build a semantic cache at all. Same shape of trade-off as Lesson 3's CAP theorem — trading a guarantee (answer correctness for *this exact* question) for a resource win (hit rate, cost, latency) — one layer higher in the stack than a database read, but structurally the identical bet.
+**Trade-offs considered:**
 
-**Case-study pointer:** this Concept's anchor is Lesson 1's B4 (semantic caching) and C2 (vector databases), bridged directly here. Capstone #10's KV-cache reuse (`case-studies/llm-inference-serving`) is this idea's compute-level sibling — caching "have I already computed this state" rather than "have I already answered this question" — while capstone #9's retrieval pipeline (`case-studies/rag-contextual-retrieval`) is the non-cache, full-knowledge-base use of the same underlying vector-database infrastructure that a semantic cache is a narrower, cache-shaped application of.
+- A low threshold raises hit rate and cost savings (per Concept 3's arithmetic) but raises the odds of serving a subtly wrong answer.
+- A high threshold is safer but converges toward exact-match caching's low hit rate, giving up most of the reason to build a semantic cache.
+- Same shape as Lesson 3's CAP theorem: trading a guarantee (correctness for *this exact* question) for a resource win (hit rate, cost, latency), one layer higher in the stack than a database read.
+
+**Situation to reason through:**
+
+- A support bot makes 100,000 LLM calls a day.
+- An exact-match cache hits 5% of prompts. A semantic cache at similarity 0.95 hits 40%.
+- The PM wants a 0.90 threshold, which a test suggests lifts hits to about 55% (illustrative).
+- Reviewers notice that "refund order 1234" and "refund order 4321" score above 0.90 against each other.
+
+<details>
+<summary><b>Q1.</b> What does moving to 0.90 actually save?</summary>
+
+**How to think:** convert hit rates into calls, then compare steps.
+
+- LLM calls per day: 95,000 (exact match), 60,000 (at 0.95), 45,000 (at 0.90).
+- Moving from 0.95 to 0.90 saves 15,000 more calls, a 25% cut from the 0.95 level.
+
+<details>
+<summary><b>Q1a.</b> What does a false positive cost here?</summary>
+
+**How to think:** ask what a wrong hit returns, and who it hurts.
+
+- A false positive returns the cached answer for a *different* order, possibly another customer's details.
+- An exact-match cache can never do this, because it only returns the literal answer to the literal key.
+
+<details>
+<summary><b>Q1b.</b> So what do you decide?</summary>
+
+- **Don't use one global threshold.** Prompts that hinge on specific entities (order IDs, account data) should bypass the cache or be keyed on the extracted entity. Generic FAQ questions, like password reset, can use a lower threshold.
+- **Scope entries.** Key the cache per tenant or per user so a hit can't cross that boundary.
+- **Decide by measuring.** Sample hits at each threshold, have them reviewed, and estimate the false-positive rate before moving.
+- This is the CAP bet again: trading a guarantee (the right answer for this exact question) for a resource win (hit rate and cost).
+</details>
+</details>
+</details>
+
+**Case-study pointer:**
+
+- This Concept's anchor is Lesson 1's B4 (semantic caching) and C2 (vector databases), bridged directly here.
+- Capstone #10's KV-cache reuse (`case-studies/llm-inference-serving`) is this idea's compute-level sibling: caching "have I already computed this state" rather than "have I already answered this question".
+- Capstone #9's retrieval pipeline (`case-studies/rag-contextual-retrieval`) is the non-cache, full-knowledge-base use of the same vector-database infrastructure that a semantic cache applies narrowly in cache shape.
 
 **Source(s) and further reading:**
 
 - Lesson 1 (`lesson-1-ai-fundamentals-refresher.md`), Concepts B4 and C2 — the original full definitions of semantic caching and vector databases, bridged here rather than re-derived
 - Anthropic's prompt-caching documentation — a confirmed primary source for the literal prompt-caching mechanism
-- The general semantic-caching pattern as discussed in open-source tooling such as GPTCache — **unconfirmed as a specific-company primary source**: no single company's primary engineering teardown was confirmed for this pattern specifically; included here as the pattern-level reference, not as an Anthropic/OpenAI-documented feature
+- The general semantic-caching pattern as discussed in open-source tooling such as GPTCache — **unconfirmed as a specific-company primary source**: no single company's primary engineering teardown was confirmed for this pattern; included as the pattern-level reference, not as an Anthropic/OpenAI-documented feature
 - Kwon et al., *"Efficient Memory Management for LLM Serving with PagedAttention,"* SOSP 2023 (arXiv:2309.06180) — capstone #10's KV-cache-reuse mechanism, cited here as the compute-level sibling pattern
 - Anthropic, *"Introducing Contextual Retrieval,"* Sept. 2024 — capstone #9's source
 
@@ -409,9 +675,11 @@ flowchart LR
 
 ## Hands-On Walkthrough
 
-There's no single CLI for "the data layer" in general — work through this real schema and runnable code instead.
+There's no single CLI for "the data layer" in general. Work through this real schema and runnable code instead.
 
-**1. Deriving a shard count from a data-volume estimate.** A Pinterest-scale `pins` table needs to hold 2 billion rows, each row averaging 300 bytes (a bigint ID, a bigint owner ID, a short embedding-reference string, and a timestamp):
+**1. Deriving a shard count from a data-volume estimate.**
+
+A Pinterest-scale `pins` table needs to hold 2 billion rows, each averaging 300 bytes (a bigint ID, a bigint owner ID, a short embedding-reference string, and a timestamp):
 
 ```
 total_table_size = 2,000,000,000 rows × 300 bytes/row
@@ -438,7 +706,8 @@ CREATE TABLE pins (
 );
 ```
 
-`shard_key` is a **generated column** — a value the database computes automatically from other columns in the same row (here, `user_id % 10`) rather than one the application writes directly — so a pin's shard assignment can never drift out of sync with its `user_id`. Sharding on `user_id` rather than `pin_id` deliberately colocates all of one user's pins on the same shard, so "get all pins by this user" stays a single-shard query instead of a 10-way fan-out.
+- `shard_key` is a **generated column**: a value the database computes from other columns in the same row (here `user_id % 10`) rather than one the application writes. A pin's shard assignment can never drift out of sync with its `user_id`.
+- Sharding on `user_id` rather than `pin_id` deliberately colocates one user's pins on the same shard. "Get all pins by this user" stays a single-shard query instead of a 10-way fan-out.
 
 **2. A real cache-aside read + write-through write, in Python, against that schema.**
 
@@ -488,7 +757,12 @@ def update_pin_embedding(pin_id: int, user_id: int, new_embedding_ref: str, db_c
     )
 ```
 
-Confirm for yourself: `get_pin` runs Concept 3's exact cache-aside sequence (check cache → miss → read DB → populate cache → return), and `update_pin_embedding` runs write-through (write DB and cache together, synchronously, before returning). Both take `user_id` as a parameter and compute `shard_key = user_id % NUM_SHARDS` to route to the DB — matching the DDL's `shard_key SMALLINT GENERATED ALWAYS AS (user_id % 10) STORED` column above (`NUM_SHARDS = 10` mirrors that DDL's literal `% 10`). So the DB's shard routing (keyed by `user_id`, for the user-pin colocation Part 1 explained) and the cache keys (keyed by `pin_id`, since a single pin lookup doesn't need to know which shard it came from) never disagree about which shard owns a given row.
+Confirm for yourself:
+
+- `get_pin` runs Concept 3's cache-aside sequence: check cache → miss → read DB → populate cache → return.
+- `update_pin_embedding` runs write-through: write DB and cache together, synchronously, before returning.
+- Both take `user_id` and compute `shard_key = user_id % NUM_SHARDS` to route to the DB. That matches the DDL's `shard_key SMALLINT GENERATED ALWAYS AS (user_id % 10) STORED` (`NUM_SHARDS = 10` mirrors the DDL's literal `% 10`).
+- So the DB's shard routing (keyed by `user_id`, for the user-pin colocation in Part 1) and the cache keys (keyed by `pin_id`, since a single pin lookup needn't know its shard) never disagree about which shard owns a row.
 
 ---
 
