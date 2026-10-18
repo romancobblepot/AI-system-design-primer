@@ -12,6 +12,8 @@ By the end of this lesson, you will:
 - Be able to name where in a request path caching can sit, and distinguish cache-aside, write-through, write-behind, and refresh-ahead by what each does on a read vs. a write and what each risks
 - Be able to compute how a cache's hit rate directly determines the query load that reaches the underlying database, and explain why a small hit-rate drop can flip a database from comfortably under capacity to overloaded
 - Be able to walk through, step by step, how a semantic cache (Lesson 1's B4) built on a vector database (Lesson 1's C2) is the same cache-aside algorithm as this lesson's K3, with similarity search standing in for exact-key lookup
+- Be able to name the stages of a RAG pipeline where a cache can sit (query embedding, ingestion, retrieval result, reranker, provider prompt cache, semantic answer cache), say what makes each one stale, and choose between TTL, versioned keys, and explicit invalidation
+- Be able to work out when provider-side prompt caching saves money and when it costs more than no caching at all
 - Be able to point to exactly which capstones (#1 Pinterest, #6 LinkedIn, #9 RAG/Contextual Retrieval, #10 LLM inference serving) each Concept in this lesson overlays onto
 
 ---
@@ -673,6 +675,209 @@ flowchart LR
 
 ---
 
+## Concept 5: Caching in the RAG Pipeline
+
+### Why?
+
+Concept 4 put one cache at the very end of an LLM request: the whole answer. A RAG (retrieval-augmented generation) request has more steps than that, and most of them are repeatable.
+
+- A RAG request runs a pipeline: embed the query → retrieve from the vector database (often plus keyword search) → rerank the candidates → assemble the prompt → call the LLM.
+- Each stage costs latency or money, and several are deterministic: the same input gives the same output.
+- So there are several places to cache, each with its own key, its own hit rate, and its own way of going stale.
+
+Compared with a plain database cache, a RAG cache adds two new risks:
+
+- **Staleness:** a cached stage output can outlive the data it was built from. A policy document changes and the cache keeps serving the old one.
+- **Leakage:** a cached output can cross a permission boundary. Someone who can't see a document gets an answer built from it.
+
+### What?
+
+**Six places to cache in a RAG request**
+
+| # | Cache | Key | Value | Goes stale when |
+|---|---|---|---|---|
+| 1 | Query-embedding cache | Hash of the normalized query text + embedding-model version | The query vector | The embedding model changes (never because documents change) |
+| 2 | Ingestion cache | Hash of the chunk text + model version (+ context-prompt version, for Contextual Retrieval) | The chunk's embedding, or its generated context | The chunk text, the model, or the prompt changes |
+| 3 | Retrieval-result cache | Query (or its vector) + metadata filters + permission scope + index version | An ordered list of chunk IDs | The index changes (documents added, edited, deleted) or permissions change |
+| 4 | Reranker cache | Query + candidate chunk IDs with their versions | The reranked order | Any candidate chunk changes |
+| 5 | Provider prompt cache | The exact prompt prefix | The provider's processed prefix (its KV state) | The prefix changes at all, or its lifetime runs out |
+| 6 | Semantic answer cache (Concept 4) | Query embedding + permission scope | The final answer | Any document the answer drew on changes |
+
+Where each one sits in the request path:
+
+```mermaid
+flowchart LR
+    Q["User query"] --> E["Embed query"]
+    E --> SC{"6. Semantic answer cache"}
+    SC -->|hit| ANS["Answer"]
+    SC -->|miss| R["Retrieve top-k"]
+    R --> RR["Rerank"]
+    RR --> P["Assemble prompt"]
+    P --> L["LLM call"]
+    L --> ANS
+    E -.-> C1["1. Query-embedding cache"]
+    R -.-> C3["3. Retrieval-result cache"]
+    RR -.-> C4["4. Reranker cache"]
+    P -.-> C5["5. Provider prompt cache\n(stable prefix only)"]
+    ING["Ingestion: chunk, embed, index"] -.-> C2["2. Ingestion cache"]
+```
+
+**Why the provider prompt cache (5) is different**
+
+It caches the provider's processing of a prompt prefix, not an answer. The reply is still generated fresh, and it is the same reply you would get without caching.
+
+- It saves input-token cost and prefill time, not generation time.
+- This is the provider-side form of Lesson 1's prompt caching and KV-cache reuse.
+- The mechanics below are from Anthropic's prompt-caching documentation, read 2026-10-19. Numbers differ by model and change over time, so check the current page before relying on them.
+
+How it behaves:
+
+- **Exact prefix:** a hit needs 100% identical content up to the marked point. The order is tools → system → messages, and a change at one level invalidates that level and everything after it.
+- **Lifetime:** 5 minutes by default, refreshed at no extra charge each time the entry is used. A 1-hour lifetime is available at a higher price.
+- **Price:** writing the entry costs 1.25x the base input price (2x for the 1-hour lifetime). Reading it costs about 0.1x on most models, and less on some newer ones.
+- **Minimum length:** set per model (the current page lists 512 to 4,096 tokens). Below it the request runs uncached **with no error**. Check `cache_creation_input_tokens` and `cache_read_input_tokens` in the response to see what actually happened.
+- **Timing:** the entry becomes available once the first response begins, so requests launched at the same moment can all miss.
+- **Prefix order:** retrieved chunks change on every query, so they make a poor prefix. Put stable parts first (tool definitions, system prompt, fixed documents) and variable parts last (retrieved chunks, the user's question).
+
+**Three ways to keep a cache honest**
+
+- **TTL** — entries expire after a fixed time.
+  - Simple, and staleness is bounded: the worst case is the TTL itself. (Lesson 4's DNS TTL works the same way.)
+- **Versioned keys** — put the index or document version in the key.
+  - A new version means a new key, so old entries are never read. Correct by construction.
+  - Cost: the hit rate for affected keys drops to zero after each update.
+- **Explicit invalidation** — on an update, delete every entry that used that document.
+  - Precise, but needs a reverse map from document ID to cache entries. An entry you miss stays stale.
+
+Choose by what a wrong answer costs. A stable FAQ can ride on a TTL. A policy or legal answer needs versioned keys or explicit invalidation.
+
+**Permission scope**
+
+- Put the permission scope (tenant, role, or group) in the key of every cache that stores retrieval output or answers: stages 3, 4 and 6.
+- A cache shared across scopes is a data leak. This is Lesson 8's Concept F5 (multi-tenant isolation) applied to a cache: one missing filter becomes the incident.
+
+### How?
+
+**Worked example 1 — which cache actually pays? (illustrative latencies)**
+
+A RAG request takes 30 ms to embed the query, 40 ms to retrieve, 120 ms to rerank, and 1,800 ms for the LLM call.
+
+```
+Uncached request = 30 (embed) + 40 (retrieve) + 120 (rerank) + 1,800 (LLM) = 1,990 ms
+
+Stage caches only (hit rates 30% / 20% / 20% on embed / retrieve / rerank):
+  saved = 0.30 × 30 + 0.20 × 40 + 0.20 × 120 = 9 + 8 + 24 = 41 ms   (about 2% of 1,990)
+
+Semantic answer cache at a 40% hit rate
+(every request pays the embed plus a 40 ms similarity lookup):
+  hit  = 30 + 40                     = 70 ms
+  miss = 30 + 40 + 40 + 120 + 1,800  = 2,030 ms
+  expected = 0.4 × 70 + 0.6 × 2,030  = 28 + 1,218 = 1,246 ms   (about 37% below 1,990)
+```
+
+- The stage caches save about 41 ms because the stages they skip are cheap. The answer cache saves about 744 ms because it skips the LLM call.
+- Cache where the expensive step is. Note the lookup adds 40 ms to every miss, which is the price of having the cache.
+
+**Worked example 2 — when does prompt caching pay, and when does it cost more?**
+
+A RAG assistant resends a stable 6,000-token prefix (system prompt, tool definitions, a fixed policy document) on every request. Let P be the base input price per token (kept symbolic, since prices change). Use the 5-minute lifetime, a write at 1.25P and a read at 0.1P.
+
+```
+No caching, 10 requests:  10 × 6,000 × P = 60,000 P
+
+Caching, 10 requests all inside the 5-minute lifetime:
+  first request writes:  6,000 × 1.25 P   =  7,500 P
+  nine requests read:    9 × 6,000 × 0.1 P =  5,400 P
+  total                                    = 12,900 P   (78.5% below 60,000 P)
+
+Break-even:
+  extra cost of the write  = 0.25 × 6,000 P         = 1,500 P
+  saving per read          = 6,000 P - 600 P        = 5,400 P
+  1,500 / 5,400 ≈ 0.28  →  the first reuse already repays the write
+
+Same 10 requests, each more than 5 minutes apart (every one re-writes, none reads):
+  10 × 7,500 P = 75,000 P    (25% MORE than no caching)
+
+Same 10 requests on the 1-hour lifetime (write at 2P), all inside the hour:
+  6,000 × 2 P + 9 × 600 P = 12,000 P + 5,400 P = 17,400 P   (71% below 60,000 P)
+```
+
+- This counts input tokens only. Output tokens cost the same either way.
+- The risk is silent: a prefix that is too short, or requests spaced beyond the lifetime, give you the write premium and no reads.
+
+**Trade-offs considered:**
+
+- **Query-embedding cache:** tiny, safe, and rarely wrong, but the savings are small because embedding is cheap.
+- **Retrieval and reranker caches:** save moderate latency, but go stale whenever the index changes, so they need versioned keys or invalidation.
+- **Provider prompt cache**
+  - The biggest cost cut for large repeated prefixes, with no change to the answer.
+  - Needs an exact prefix, a minimum length, and requests inside the lifetime. When it fails, it fails silently, as a higher bill.
+- **Semantic answer cache:** the biggest saving and the biggest correctness risk (Concept 4's false positives, plus staleness, plus permissions).
+- Every cache you add is one more thing to invalidate. Add them one at a time, starting where measurement shows the cost.
+
+**Situation to reason through:**
+
+- An internal HR assistant answers from policy documents using RAG.
+- It has two caches: a retrieval-result cache (TTL of 24 hours, keyed on the normalized query text) and a semantic answer cache (similarity 0.95, shared by all users).
+- At 9:00, HR edits the parental-leave policy. At 11:00, employees still get the old policy.
+- Separately, a contractor asks a benefits question and gets an answer that quotes a section only full-time employees may see.
+
+<details>
+<summary><b>Q1.</b> Why is the old policy still served at 11:00?</summary>
+
+**How to think:** find which cached stage still holds the old data, and how long it can live.
+
+- The retrieval cache returns the old chunk IDs for up to its TTL. An entry written at 8:59 lives until 8:59 the next day. Worst-case staleness equals the TTL.
+- The semantic cache holds the finished answer. A hit skips retrieval entirely, so even a re-indexed corpus can't fix it.
+- Neither key contains anything about the document's version, so the caches have no way to know the source changed.
+
+<details>
+<summary><b>Q1a.</b> How do you fix the staleness?</summary>
+
+**How to think:** match the invalidation method to the cost of a wrong answer.
+
+- A wrong policy answer is costly, so don't lean on a 24-hour TTL.
+- **Versioned keys:** put the index (or document) version in the key. The 9:00 re-index makes every old key unreachable. The price is that the hit rate resets after each update.
+- **Explicit invalidation:** on the edit, delete the entries that cite that document. This needs a document-to-entries map, and a missed entry stays stale.
+- **TTL as a backstop:** keep a short TTL for volatile documents (minutes) and a long one only for stable FAQ content.
+
+<details>
+<summary><b>Q1b.</b> What went wrong with the contractor, and how do you prevent it?</summary>
+
+**How to think:** a cache is a shortcut around the access check, so the check has to be part of the key.
+
+- Retrieval ran for an employee and the answer was cached. A contractor's similar question then hit the shared semantic cache.
+- Put the permission scope (role, tenant, or group) in the key of stages 3, 4 and 6, or skip caching for scoped content.
+- Never let an answer cache serve across scopes with different access.
+- This is Lesson 8's F5 principle: one missing filter turns a cache into a leak.
+</details>
+</details>
+</details>
+
+**Case-study pointer:**
+
+- **Capstone #9** (`case-studies/rag-contextual-retrieval`) is the confirmed overlay for caches 2 and 5.
+  - Contextual Retrieval has an LLM write a context for each chunk at indexing time. The whole document goes into the prompt cache once, and each chunk's call reuses it.
+  - The source's cost figure is 1.02 dollars per million document tokens. The same README computes 2.92 dollars without caching, 2.9x as much.
+- **The README's traps are the failure modes above, with prices.**
+  - One task per chunk can silently defeat the cache: parallel jobs each write and none reads.
+  - A document shorter than the model's minimum cacheable length gets no caching and no error.
+  - For its example corpus the README prices these at about 550 dollars (caching works), about 1,270 (parallel jobs defeat it) and about 10,700 (below the minimum). Those prices were read on 2026-10-17.
+- **Freshness:** when a document is edited, the context-generation call must re-run for every chunk of it, because the generated context depends on the document's current content. That is the ingestion cache's version of staleness.
+- **Leakage:** the README notes that generated context can carry facts across section-level permissions. This is the permission-scope point above.
+- **Link to Lesson 6:** a task queue that fans out one task per chunk (Concept 1) is the parallel pattern that can miss the prompt cache. The first call's cache write needs to be underway before the rest of that document's calls start. That is a reasoned fix, not something the source specifies.
+
+**Source(s) and further reading:**
+
+- Anthropic's prompt-caching documentation — lifetime, price multipliers, minimum lengths, exact-match rule and the invalidation order (read 2026-10-19; model-specific numbers change)
+- Anthropic, *"Introducing Contextual Retrieval,"* Sept. 2024 — capstone #9's source for the one-time, prompt-cached context generation
+- Lesson 1 (`lesson-1-ai-fundamentals-refresher.md`), Concept B4 — the original definitions of prompt caching, KV-cache reuse and semantic caching
+- Lesson 8 (`lesson-8-safety-and-isolation.md`), Concept F5 — multi-tenant isolation, applied here to cache keys
+- `case-studies/rag-contextual-retrieval/README.md` (capstone #9) — the cost table and the "easy-to-miss traps" referenced above
+- `system-design-primer`'s "Caching" section (invalidation and cache-aside in their original, non-AI framing)
+
+---
+
 ## Hands-On Walkthrough
 
 There's no single CLI for "the data layer" in general. Work through this real schema and runnable code instead.
@@ -774,6 +979,7 @@ Confirm for yourself:
 | NoSQL types | Key-value, document, wide-column, and graph each match a different access pattern and trade ACID for BASE (basically available, soft state, eventually consistent) — and a vector database is a KV/wide-column hybrid with a similarity index bolted on, not a genuinely new fifth category. |
 | Caching strategies | Cache-aside, write-through, write-behind, and refresh-ahead differ in what happens on a read vs. a write and what each risks (stale reads, double write latency, data loss on crash, or wasted speculative refresh) — and hit rate directly determines database load, so a small hit-rate drop can flip a database from comfortably under capacity to overloaded. |
 | Bridge to Lesson 1 | Semantic caching (B4) is cache-aside with similarity search replacing exact-key lookup, and a vector database (C2) is the storage layer underneath it — the same hit-rate-vs-correctness trade-off from K3 reappears one layer up, trading exact correctness for a cost/latency win. |
+| Caching in the RAG pipeline | A RAG request has six cache points (query embedding, ingestion, retrieval result, reranker, provider prompt cache, semantic answer), and the savings sit where the expensive step is — the LLM call. Each cache needs an invalidation plan (TTL, versioned keys, or explicit invalidation) and the permission scope in its key; provider prompt caching repays its write premium on the first reuse but costs more than no caching if requests fall outside its lifetime or the prefix is under the minimum length. |
 
 ## Key Formulas & Schema Reference
 
@@ -791,6 +997,18 @@ Read-replica capacity:
 Cache load-shedding:
   queries_reaching_db = total_queries × (1 - cache_hit_rate)
   headroom_vs_db_capacity = db_capacity_qps - queries_reaching_db
+
+Expected latency with an answer cache:
+  expected = hit_rate × hit_path + (1 - hit_rate) × miss_path
+  (the miss path includes the cache lookup itself)
+
+Provider prompt cache (5-minute write at 1.25× base input price, read at 0.1×):
+  extra_write_cost    = 0.25 × prefix_tokens × P
+  saving_per_read     = 0.9 × prefix_tokens × P
+  reads_to_break_even = 0.25 / 0.9 ≈ 0.28
+  (requests spaced beyond the lifetime re-write every time: 1.25× the no-cache cost)
+
+Worst-case staleness under a TTL = TTL
 ```
 
 ```sql
